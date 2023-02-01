@@ -10,6 +10,7 @@ conda install https://anaconda.org/brown-data-science/gcc/5.4.0/download/linux-6
 
 Then,
 ```
+conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=10.2 -c pytorch
 pip install -e ./
 pip install wandb
 ```
