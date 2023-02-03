@@ -95,9 +95,11 @@ class TransformerEncoderBase(FairseqEncoder):
         else:
             self.layers = nn.ModuleList([])
         moe_freq = max(cfg.encoder_moe_freq, cfg.moe_freq)
+        moa_freq = cfg.moa_freq
         for i in range(cfg.encoder_layers):
             is_moe_layer = moe_freq != 0 and (i + 1) % moe_freq == 0
-            self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer))
+            is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
+            self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer))
         self.num_layers = len(self.layers)
 
         if cfg.encoder.normalize_before:
@@ -105,9 +107,9 @@ class TransformerEncoderBase(FairseqEncoder):
         else:
             self.layer_norm = None
 
-    def build_encoder_layer(self, cfg, is_moe_layer=False):
+    def build_encoder_layer(self, cfg, is_moe_layer=False, is_moa_layer=False):
         layer = TransformerEncoderLayer(
-            cfg, return_fc=self.return_fc, is_moe_layer=is_moe_layer
+            cfg, return_fc=self.return_fc, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer,
         )
         checkpoint = cfg.checkpoint_activations
         if checkpoint:
@@ -116,7 +118,7 @@ class TransformerEncoderBase(FairseqEncoder):
         # if we are checkpointing, enforce that FSDP always wraps the
         # checkpointed layer, regardless of layer size
         min_params_to_wrap = cfg.min_params_to_wrap if not checkpoint else 0
-        if not is_moe_layer or cfg.ddp_backend != "fully_sharded":
+        if not (is_moe_layer or is_moa_layer) or cfg.ddp_backend != "fully_sharded":
             layer = fsdp_wrap(layer, min_num_params=min_params_to_wrap)
         else:
             layer = fsdp_wrap_expert(cfg, layer, min_num_params=min_params_to_wrap)
@@ -366,7 +368,7 @@ class TransformerEncoder(TransformerEncoderBase):
             return_fc=return_fc,
         )
 
-    def build_encoder_layer(self, args, is_moe_layer=False):
+    def build_encoder_layer(self, args, is_moe_layer=False, is_moa_layer=False):
         return super().build_encoder_layer(
-            TransformerConfig.from_namespace(args), is_moe_layer=is_moe_layer
+            TransformerConfig.from_namespace(args), is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer,
         )

@@ -23,6 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 
@@ -140,7 +141,7 @@ class TransformerEncoderLayerBase(nn.Module):
         args (argparse.Namespace): parsed command-line arguments
     """
 
-    def __init__(self, cfg, return_fc=False, is_moe_layer=False):
+    def __init__(self, cfg, return_fc=False, is_moe_layer=False, is_moa_layer=False):
         super().__init__()
         self.cfg = cfg
         self.return_fc = return_fc
@@ -156,19 +157,22 @@ class TransformerEncoderLayerBase(nn.Module):
         self.moe_fom = cfg.moe_fom
         self.normalize_before = cfg.encoder_normalize_before
         self.is_moe_layer = is_moe_layer
+        self.is_moa_layer = is_moa_layer
         self.prefix_token_positions = (
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
         )
         ffn_dim = cfg.encoder.ffn_embed_dim
+        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffb_dim
         self.attn_ln = LayerNorm(self.embed_dim) if cfg.scale_attn else None
         self.ffn_layernorm = LayerNorm(ffn_dim) if cfg.scale_fc else None
-        if self.is_moe_layer and cfg.alternate_ffn_embed_dim > 0:
+        if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_ffn_embed_dim > 0:
             ffn_dim = cfg.alternate_ffn_embed_dim
         # the second condition is for a "pseudo" MoE layer
         # (shared FFN with expert FFN dimension) that tries
         # to replicate FLOPs used by an expert MoE layer with perfectly balanced load
         build_moe = self.is_moe_layer and cfg.alternate_ffn_embed_dim == 0
-        if not build_moe or cfg.moe_cmr:
+        build_moa = self.is_moa_layer and cfg.alternate_ffn_embed_dim == 0
+        if not (build_moe or build_moa) or cfg.moe_cmr:
             self.activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
             activation_dropout_p = cfg.activation_dropout
             if activation_dropout_p == 0:
@@ -240,6 +244,40 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
+
+        if build_moa:
+            lang_idx = None
+            if cfg.moa_top1_expert:
+                gate = MOATop1Gate(
+                    self.embed_dim,
+                    cfg.moa_expert_count,
+                    use_fp32=cfg.moa_gating_use_fp32,
+                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
+                    use_tutel=cfg.use_tutel_moa,
+                )
+            else:
+                gate = MOATop2Gate(
+                    self.embed_dim,
+                    cfg.moa_expert_count,
+                    cfg.moa_gating_use_fp32,
+                    cfg.moa_second_expert_policy,
+                    cfg.moa_normalize_gate_prob_before_dropping,
+                    cfg.moa_eval_capacity_token_fraction,
+                    cfg.moa_batch_prioritized_routing,
+                    use_tutel=cfg.use_tutel_moa,
+                    init_model_on_gpu=cfg.init_model_on_gpu,
+                    analyse_moa_gating=cfg.analyse_moa_gating,
+                )
+            adapters = make_experts(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+            self.moa_layer = MOALayer(
+                gate,
+                adapters,
+                cfg,
+                max_positions=cfg.max_source_positions,
+                tok_dropout=cfg.moa_eom,
+                moa_local_drop=cfg.moa_local_drop,
+            )
+
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
     def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
@@ -390,6 +428,9 @@ class TransformerEncoderLayerBase(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
+        run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
+        if run_moa:
+            pre_adapter_x = x
         if not run_moe:
             x, fc_result = _ffn(
                 x,
@@ -435,6 +476,21 @@ class TransformerEncoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
         x = self.residual_connection(x, residual)
+        if run_moa:
+            # pre_adapter - seq_len, batch_size, model_dim
+            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+            prefix_tokens = (
+                tokens[:, self.prefix_token_positions]
+                if tokens is not None and self.prefix_token_positions is not None
+                else None
+            )
+            moa_module = self.moa_layer
+            # TODO: modify l_aux
+            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens)
+            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            x = x + pre_adapter_x
+        
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
@@ -487,6 +543,7 @@ class TransformerDecoderLayerBase(nn.Module):
         add_bias_kv=False,
         add_zero_attn=False,
         is_moe_layer=False,
+        is_moa_layer=False,
     ):
         super().__init__()
         self.cfg = cfg
@@ -554,15 +611,18 @@ class TransformerDecoderLayerBase(nn.Module):
                 )
 
         self.is_moe_layer = is_moe_layer
+        self.is_moa_layer = is_moa_layer
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
         ffn_dim = cfg.decoder.ffn_embed_dim
-        if self.is_moe_layer and cfg.alternate_decoder_ffn_embed_dim > 0:
+        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffb_dim
+        if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_decoder_ffn_embed_dim > 0:
             ffn_dim = cfg.alternate_decoder_ffn_embed_dim
 
         self.alpha2 = None
         build_moe = self.is_moe_layer and cfg.alternate_decoder_ffn_embed_dim == 0
-        if not build_moe or cfg.moe_cmr:
+        build_moa = self.is_moa_layer and cfg.alternate_decoder_ffn_embed_dim == 0
+        if not (build_moe or build_moa) or cfg.moe_cmr:
             self.activation_fn = utils.get_activation_fn(
                 activation=str(cfg.activation_fn)
                 if cfg.activation_fn is not None
@@ -658,6 +718,43 @@ class TransformerDecoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
+
+        if build_moa:
+            lang_idx = None
+            if cfg.cmr_log_lang_gates:
+                lang_idx = getattr(cfg, "lang_idx")
+                assert lang_idx is not None, cfg
+            if cfg.moa_top1_expert:
+                gate = Top1Gate(
+                    self.embed_dim,
+                    cfg.moa_expert_count,
+                    use_fp32=cfg.moa_gating_use_fp32,
+                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
+                    use_tutel=cfg.use_tutel_moa,
+                    init_model_on_gpu=init_model_on_gpu,
+                )
+            else:
+                gate = Top2Gate(
+                    self.embed_dim,
+                    cfg.moa_expert_count,
+                    cfg.moa_gating_use_fp32,
+                    cfg.moa_second_expert_policy,
+                    cfg.moa_normalize_gate_prob_before_dropping,
+                    cfg.moa_eval_capacity_token_fraction,
+                    cfg.moa_batch_prioritized_routing,
+                    use_tutel=cfg.use_tutel_moa,
+                    init_model_on_gpu=init_model_on_gpu,
+                    analyse_moa_gating=cfg.analyse_moa_gating,
+                )
+            adapters = make_experts(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+            self.moa_layer = MOALayer(
+                gate,
+                adapters,
+                cfg,
+                max_positions=cfg.max_target_positions,
+                tok_dropout=cfg.moa_eom,
+                moa_local_drop=cfg.moa_local_drop,
+            )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -859,6 +956,8 @@ class TransformerDecoderLayerBase(nn.Module):
                 x = self.encoder_attn_layer_norm(x)
 
         residual = x
+        if self.is_moa_layer:
+            pre_adapter_x = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
         if not self.is_moe_layer or self.cfg.alternate_decoder_ffn_embed_dim > 0:
@@ -905,6 +1004,21 @@ class TransformerDecoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
         x = self.residual_connection(x, residual, alpha=self.alpha2)
+
+        if self.is_moa_layer:
+            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+            prefix_tokens = (
+                tokens[:, self.prefix_token_positions]
+                if tokens is not None and self.prefix_token_positions is not None
+                else None
+            )
+            moa_module = self.moa_layer
+            # TODO: l_aux modification
+            x, l_aux = moa_module(x, prefix_tokens=prefix_tokens)
+            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            x = x + pre_adapter_x
+
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         if self.onnx_trace and incremental_state is not None:

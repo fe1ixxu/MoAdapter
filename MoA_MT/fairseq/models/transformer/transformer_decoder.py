@@ -136,11 +136,13 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         else:
             self.layers = nn.ModuleList([])
         moe_freq = max(cfg.decoder_moe_freq, cfg.moe_freq)
+        moa_freq = cfg.moa_freq
         for i in range(cfg.decoder_layers):
             is_moe_layer = moe_freq != 0 and (i + 1) % moe_freq == 0
+            is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
             self.layers.append(
                 self.build_decoder_layer(
-                    cfg, no_encoder_attn=no_encoder_attn, is_moe_layer=is_moe_layer
+                    cfg, no_encoder_attn=no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer,
                 )
             )
 
@@ -243,8 +245,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         alibi = alibi.view(n_attention_heads, 1, max_seq_len)
         return alibi
 
-    def build_decoder_layer(self, cfg, no_encoder_attn=False, is_moe_layer=False):
-        layer = TransformerDecoderLayer(cfg, no_encoder_attn, is_moe_layer=is_moe_layer)
+    def build_decoder_layer(self, cfg, no_encoder_attn=False, is_moe_layer=False, is_moa_layer=False):
+        layer = TransformerDecoderLayer(cfg, no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer)
         checkpoint = cfg.checkpoint_activations
         if checkpoint:
             offload_to_cpu = cfg.offload_activations
@@ -252,7 +254,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # if we are checkpointing, enforce that FSDP always wraps the
         # checkpointed layer, regardless of layer size
         min_params_to_wrap = cfg.min_params_to_wrap if not checkpoint else 0
-        if not is_moe_layer or cfg.ddp_backend != "fully_sharded":
+        if not (is_moe_layer or is_moa_layer) or cfg.ddp_backend != "fully_sharded":
             layer = fsdp_wrap(layer, min_num_params=min_params_to_wrap)
         else:
             layer = fsdp_wrap_expert(cfg, layer, min_num_params=min_params_to_wrap)
@@ -610,9 +612,10 @@ class TransformerDecoder(TransformerDecoderBase):
             TransformerConfig.from_namespace(args), dictionary, embed_tokens
         )
 
-    def build_decoder_layer(self, args, no_encoder_attn=False, is_moe_layer=False):
+    def build_decoder_layer(self, args, no_encoder_attn=False, is_moe_layer=False, is_moa_layer=False):
         return super().build_decoder_layer(
             TransformerConfig.from_namespace(args),
             no_encoder_attn=no_encoder_attn,
             is_moe_layer=is_moe_layer,
+            is_moa_layer=is_moa_layer,
         )

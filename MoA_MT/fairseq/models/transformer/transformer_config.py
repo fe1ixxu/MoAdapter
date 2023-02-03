@@ -107,6 +107,10 @@ class TransformerConfig(FairseqDataclass):
         default=0.0,
         metadata={"help": "Masking rate for MoE expert output masking (EOM)"},
     )
+    moa_eom: float = field(
+        default=0.0,
+        metadata={"help": "Masking rate for MoA expert output masking (EOM)"},
+    )
     moe_fom: float = field(
         default=0.0, metadata={"help": "Masking rate for Final output masking (FOM)"}
     )
@@ -232,6 +236,10 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "Frequency at which we insert MoE Transformer layers"},
     )
+    moa_freq: int = field(
+        default=0,
+        metadata={"help": "Frequency at which we insert Mixture of Adapter layers"},
+    )
     encoder_moe_freq: int = field(
         default=0,
         metadata={
@@ -247,13 +255,24 @@ class TransformerConfig(FairseqDataclass):
     moe_expert_count: int = field(
         default=0, metadata={"help": "Number of experts in each MoE Layer"}
     )
+    moa_expert_count: int = field(
+        default=0, metadata={"help": "Number of adapters in each MoA Layer"}
+    )
     moe_gating_use_fp32: bool = field(
         default=False,
         metadata={"help": "Use FP32 computations in MoE top2 gating function"},
     )
+    moa_gating_use_fp32: bool = field(
+        default=False,
+        metadata={"help": "Use FP32 computations in MoA top2 gating function"},
+    )
     moe_second_expert_policy: str = field(
         default="sampling",
         metadata={"help": "policy for second expert, options: all/sampling/random"},
+    )
+    moa_second_expert_policy: str = field(
+        default="sampling",
+        metadata={"help": "policy for second adapter, options: all/sampling/random"},
     )
     moe_normalize_gate_prob_before_dropping: bool = field(
         default=False,
@@ -261,17 +280,39 @@ class TransformerConfig(FairseqDataclass):
             "help": "whether to normalize gate probs before or after dropping experts for capacity and randomization"
         },
     )
+    moa_normalize_gate_prob_before_dropping: bool = field(
+        default=False,
+        metadata={
+            "help": "whether to normalize gate probs before or after dropping adapters for capacity and randomization"
+        },
+    )
     moe_local_drop: float = field(
+        default=0.0,
+        metadata={"help": "Probability of gating drop out to local experts"},
+    )
+    moa_local_drop: float = field(
         default=0.0,
         metadata={"help": "Probability of gating drop out to local experts"},
     )
     moe_expert_ffn_dim: Optional[int] = field(
         default=None, metadata={"help": "MoE expert FFN dimension"}
     )
+    adapter_hidden_dim: Optional[int] = field(
+        default=None, metadata={"help": "Adapter hidden dimension"}
+    )
     moe_top1_expert: Optional[bool] = field(
         default=False, metadata={"help": "Use top1 gate instead of top2"}
     )
+    moa_top1_expert: Optional[bool] = field(
+        default=False, metadata={"help": "Use top1 gate instead of top2 for MoA"}
+    )
     moe_eval_capacity_token_fraction: Optional[float] = field(
+        default=0.25,
+        metadata={
+            "help": "Default: 0.25, Fraction of tokens as capacity during validation, if set to negative, use same as training. range: (0.0, 1.0]."
+        },
+    )
+    moa_eval_capacity_token_fraction: Optional[float] = field(
         default=0.25,
         metadata={
             "help": "Default: 0.25, Fraction of tokens as capacity during validation, if set to negative, use same as training. range: (0.0, 1.0]."
@@ -300,6 +341,12 @@ class TransformerConfig(FairseqDataclass):
         },
     )
     moe_batch_prioritized_routing: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "if true orders token by the gate prob before capacity dropping."
+        },
+    )
+    moa_batch_prioritized_routing: Optional[bool] = field(
         default=False,
         metadata={
             "help": "if true orders token by the gate prob before capacity dropping."
@@ -406,10 +453,18 @@ class TransformerConfig(FairseqDataclass):
         default=False,
         metadata={"help": "use tutel moe"},
     )
+    use_tutel_moa: bool = field(
+        default=False,
+        metadata={"help": "use tutel moa"},
+    )
 
     analyse_moe_gating: bool = field(
         default=False,
         metadata={"help": "used to output more stats when analysing MoE models"},
+    )
+    analyse_moa_gating: bool = field(
+        default=False,
+        metadata={"help": "used to output more stats when analysing MoA models"},
     )
     
     # We need to make this hierarchical dataclass like the flat namespace
