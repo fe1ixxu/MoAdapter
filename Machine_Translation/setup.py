@@ -193,6 +193,7 @@ def do_setup(package_data):
             "fairscale==0.4.6",
             "wandb",
             "tensorboardX",
+            "sentencepiece"
         ],
         extras_require={
             "dev": ["flake8", "pytest", "black==22.3.0"],
