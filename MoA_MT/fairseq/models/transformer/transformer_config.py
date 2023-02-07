@@ -324,6 +324,12 @@ class TransformerConfig(FairseqDataclass):
             "help": "Divide expert gradients by (1) 'world_size' (2) 'sqrt_world_size'"
         },
     )
+    moa_normalize_expert_grad: Optional[str] = field(
+        default="world_size",
+        metadata={
+            "help": "Divide expert gradients by (1) 'world_size' (2) 'sqrt_world_size'"
+        },
+    )
     use_moe_pad_mask: Optional[bool] = field(
         default=False,
         metadata={

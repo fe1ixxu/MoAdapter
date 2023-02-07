@@ -240,7 +240,7 @@ class TransformerEncoderBase(FairseqEncoder):
             results["encoder_states"].append(x)
 
         # encoder layers
-        loss_keys = ["moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
         for key in loss_keys:
             results[key] = []
         for layer in self.layers:

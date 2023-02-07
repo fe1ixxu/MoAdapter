@@ -13,6 +13,7 @@ from fairseq.criterions.fairseq_criterion import (  # noqa
     LegacyFairseqCriterion,
     MoECriterion,
     MoECriterionConfig,
+    MoACriterionConfig
 )
 from omegaconf import DictConfig
 

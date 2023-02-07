@@ -47,20 +47,19 @@ source ~/.bashrc
 conda activate MOA
 
 ## Train (comment for evaluation)
- python train.py ${DATA_BIN} --arch ${ARCH}  --task translation_multi_simple_epoch \
- --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 1 --encoder-langtok src --decoder-langtok \
- --encoder-layers ${LAYER} --decoder-layers ${LAYER} --encoder-ffn-embed-dim ${FFN_DIM} --decoder-ffn-embed-dim ${FFN_DIM} \
- --encoder-embed-dim ${DIM} --decoder-embed-dim ${DIM} --encoder-attention-heads ${HEADS} --decoder-attention-heads ${HEADS} --attention-dropout 0.1 --relu-dropout 0.0 \
- --decoder-normalize-before --encoder-normalize-before --share-all-embeddings --max-source-positions 512 --max-target-positions 512 \
- --max-update ${MAX_UPDATES} --update-freq ${FREQ}  --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' --lr-scheduler inverse_sqrt \
- --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
- --label-smoothing 0.1 --best-checkpoint-metric loss --max-tokens ${MAX_TOKENS}  --validate-interval-updates 500 --save-interval-updates 500 --save-interval 2 \
- --keep-interval-updates 1  --validate-interval 1000  --seed 42 --log-format simple --log-interval 100 \
- --fp16 --optimizer adam --min-params-to-wrap 100000000  \
- --save-dir ${SAVE_PATH}  --skip-invalid-size-inputs-valid-test --memory-efficient-fp16  --ddp-backend fully_sharded --wandb-project MOA
-exit
+#  python train.py ${DATA_BIN} --arch ${ARCH}  --task translation_multi_simple_epoch \
+#  --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 1 --encoder-langtok src --decoder-langtok \
+#  --encoder-layers ${LAYER} --decoder-layers ${LAYER} --encoder-ffn-embed-dim ${FFN_DIM} --decoder-ffn-embed-dim ${FFN_DIM} \
+#  --encoder-embed-dim ${DIM} --decoder-embed-dim ${DIM} --encoder-attention-heads ${HEADS} --decoder-attention-heads ${HEADS} --attention-dropout 0.1 --relu-dropout 0.0 \
+#  --decoder-normalize-before --encoder-normalize-before --share-all-embeddings --max-source-positions 512 --max-target-positions 512 \
+#  --max-update ${MAX_UPDATES} --update-freq ${FREQ}  --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' --lr-scheduler inverse_sqrt \
+#  --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
+#  --label-smoothing 0.1 --best-checkpoint-metric loss --max-tokens ${MAX_TOKENS}  --validate-interval-updates 500 --save-interval-updates 500 --save-interval 2 \
+#  --keep-interval-updates 1  --validate-interval 1000  --seed 42 --log-format simple --log-interval 100 \
+#  --fp16 --optimizer adam --min-params-to-wrap 100000000  \
+#  --save-dir ${SAVE_PATH}  --skip-invalid-size-inputs-valid-test --memory-efficient-fp16  --ddp-backend fully_sharded --wandb-project MOA
+# exit
 
-exit
 # Evaluate
 SRCS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
 tgt=eng
@@ -78,7 +77,7 @@ for src in ${SRCS//,/ }; do
         --task translation_multi_simple_epoch \
         --is-moe \
         --sacrebleu \
-        --encoder-langtok tgt --decoder-langtok \
+        --encoder-langtok src --decoder-langtok \
         --bpe "sentencepiece" \
         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
         --source-lang ${src} --target-lang ${tgt} \
@@ -105,7 +104,7 @@ for tgt in ${TGTS//,/ }; do
         --is-moe \
         --bpe "sentencepiece" \
         --sacrebleu \
-        --encoder-langtok tgt --decoder-langtok \
+        --encoder-langtok src --decoder-langtok \
         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
         --source-lang ${src} --target-lang ${tgt} \
         --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \

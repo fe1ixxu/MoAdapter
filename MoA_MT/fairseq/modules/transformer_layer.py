@@ -162,7 +162,7 @@ class TransformerEncoderLayerBase(nn.Module):
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
         )
         ffn_dim = cfg.encoder.ffn_embed_dim
-        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffb_dim
+        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffn_dim
         self.attn_ln = LayerNorm(self.embed_dim) if cfg.scale_attn else None
         self.ffn_layernorm = LayerNorm(ffn_dim) if cfg.scale_fc else None
         if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_ffn_embed_dim > 0:
@@ -172,7 +172,7 @@ class TransformerEncoderLayerBase(nn.Module):
         # to replicate FLOPs used by an expert MoE layer with perfectly balanced load
         build_moe = self.is_moe_layer and cfg.alternate_ffn_embed_dim == 0
         build_moa = self.is_moa_layer and cfg.alternate_ffn_embed_dim == 0
-        if not (build_moe or build_moa) or cfg.moe_cmr:
+        if not build_moe or (cfg.moe_cmr or build_moa):
             self.activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
             activation_dropout_p = cfg.activation_dropout
             if activation_dropout_p == 0:
@@ -268,7 +268,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     init_model_on_gpu=cfg.init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
                 )
-            adapters = make_experts(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
                 gate,
                 adapters,
@@ -501,13 +501,14 @@ class TransformerEncoderLayerBase(nn.Module):
 
 # backward compatible with the legacy argparse format
 class TransformerEncoderLayer(TransformerEncoderLayerBase):
-    def __init__(self, args, return_fc=False, is_moe_layer=False):
+    def __init__(self, args, return_fc=False, is_moe_layer=False, is_moa_layer=False):
         from fairseq.models.transformer import TransformerConfig
 
         super().__init__(
             TransformerConfig.from_namespace(args),
             return_fc=return_fc,
             is_moe_layer=is_moe_layer,
+            is_moa_layer=is_moa_layer,
         )
         self.args = args
 
@@ -615,14 +616,14 @@ class TransformerDecoderLayerBase(nn.Module):
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
         ffn_dim = cfg.decoder.ffn_embed_dim
-        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffb_dim
+        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffn_dim
         if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_decoder_ffn_embed_dim > 0:
             ffn_dim = cfg.alternate_decoder_ffn_embed_dim
 
         self.alpha2 = None
         build_moe = self.is_moe_layer and cfg.alternate_decoder_ffn_embed_dim == 0
         build_moa = self.is_moa_layer and cfg.alternate_decoder_ffn_embed_dim == 0
-        if not (build_moe or build_moa) or cfg.moe_cmr:
+        if not build_moe or ( build_moa or cfg.moe_cmr):
             self.activation_fn = utils.get_activation_fn(
                 activation=str(cfg.activation_fn)
                 if cfg.activation_fn is not None
@@ -725,7 +726,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 lang_idx = getattr(cfg, "lang_idx")
                 assert lang_idx is not None, cfg
             if cfg.moa_top1_expert:
-                gate = Top1Gate(
+                gate = MOATop1Gate(
                     self.embed_dim,
                     cfg.moa_expert_count,
                     use_fp32=cfg.moa_gating_use_fp32,
@@ -734,7 +735,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     init_model_on_gpu=init_model_on_gpu,
                 )
             else:
-                gate = Top2Gate(
+                gate = MOATop2Gate(
                     self.embed_dim,
                     cfg.moa_expert_count,
                     cfg.moa_gating_use_fp32,
@@ -746,7 +747,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     init_model_on_gpu=init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
                 )
-            adapters = make_experts(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
                 gate,
                 adapters,
@@ -1048,6 +1049,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         add_bias_kv=False,
         add_zero_attn=False,
         is_moe_layer=False,
+        is_moa_layer=False,
     ):
         from fairseq.models.transformer import TransformerConfig
 
@@ -1057,6 +1059,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
             is_moe_layer=is_moe_layer,
+            is_moa_layer=is_moa_layer,
         )
         self.args = args
 
@@ -1080,6 +1083,40 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             TransformerConfig.from_namespace(args),
         )
 
+def make_adapters(cfg, embed_dim, expert_ffn_dim, dropout_module) -> nn.ModuleList:
+    world_size = (
+        1
+        if not torch.distributed.is_initialized()
+        else torch.distributed.get_world_size()
+    )
+    adapter_list = []
+    ddp_rank = dist_utils.get_data_parallel_rank()
+    start_seed = torch.randint(1000000, (1,)).item()
+
+    if cfg.moa_expert_count >= world_size:  # at least as many adapterss than gpus
+        assert (
+            cfg.moa_expert_count % world_size == 0
+        ), f"{cfg.moa_expert_count}, {world_size}"
+        local_moa_expert_count = cfg.moa_expert_count // world_size
+        for i in range(local_moa_expert_count):
+            with utils.set_torch_seed(
+                start_seed + ddp_rank * local_moa_expert_count + i
+            ):
+                adapter_list.append(
+                    FeedForwardNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
+                )
+
+    else:  # less adapters than gpus
+        assert (
+            world_size % cfg.moa_expert_count == 0
+        ), f"{world_size}, {cfg.moa_expert_count}"
+        # initialize each FFN with the same seed on different GPUs
+        with utils.set_torch_seed(start_seed + ddp_rank % cfg.moa_expert_count):
+            adapter_list.append(
+                FeedForwardNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
+            )
+    adapters = nn.ModuleList(adapter_list)
+    return adapters
 
 def make_experts(cfg, embed_dim, expert_ffn_dim, dropout_module) -> nn.ModuleList:
     world_size = (

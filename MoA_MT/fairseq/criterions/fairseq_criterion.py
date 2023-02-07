@@ -150,6 +150,29 @@ class MoECriterionConfig(FairseqDataclass):
     )
     sentence_avg: bool = II("optimization.sentence_avg")
 
+@dataclass
+class MoACriterionConfig(FairseqDataclass):
+    moa_gate_loss_wt: float = field(
+        default=1.0,
+        metadata={
+            "help": "Weight associated with MoA gate loss"
+            "in the weighted sum of gate loss and cross entropy loss"
+        },
+    )
+    moa_gate_loss_combine_method: str = field(
+        default="average",
+        metadata={
+            "help": "Method of combining the gate loss from each MoA layers"
+            "('sum', 'average')"
+        },
+    )
+    moa_gate_loss_transform: str = field(
+        default="none",
+        metadata={
+            "help": "Transformation to apply to the gate loss ('none', 'neg_log')"
+        },
+    )
+    sentence_avg: bool = II("optimization.sentence_avg")
 
 class MoECriterion(FairseqCriterion):
 

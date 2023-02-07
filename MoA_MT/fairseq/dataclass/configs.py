@@ -1115,6 +1115,19 @@ class CommonEvalConfig(FairseqDataclass):
             "help": "if set, same batch on all GPUs (regardless of is_moe value)"
         },
     )
+    is_moa: bool = field(
+        default=False,
+        metadata={
+            "help": "if set, use distributed init for MoA generation or evaluation"
+        },
+    )
+    moa_generation: bool = field(
+        default=False,
+        metadata={
+            "help": "if set, same batch on all GPUs (regardless of is_moe value)"
+        },
+    )
+
 
 
 @dataclass

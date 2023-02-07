@@ -229,6 +229,7 @@ class Trainer(object):
         if (
             (self.is_fsdp)
             or (self.is_moe and not has_alt_ffn_dim)
+            or (self.is_moa and not has_alt_ffn_dim)
             or getattr(self.cfg.model, "base_layers", 0) > 0
         ):
             return True
@@ -246,7 +247,7 @@ class Trainer(object):
     @property
     def checkpoint_suffix(self) -> str:
         """Suffix to add to the checkpoint file name."""
-        if (self.is_moe or self.is_base_moe) and not self.use_sharded_state:
+        if (self.is_moe or self.is_base_moe or self.is_moa) and not self.use_sharded_state:
             return self.cfg.checkpoint.checkpoint_suffix
         elif self.is_fsdp:
             return self.cfg.checkpoint.checkpoint_suffix + "-shard{0}".format(
@@ -395,6 +396,10 @@ class Trainer(object):
         return getattr(self.cfg.model, "moe_freq", 0) > 0
 
     @property
+    def is_moa(self):
+        return getattr(self.cfg.model, "moa_freq", 0) > 0
+
+    @property
     def is_base_moe(self) -> bool:
         return getattr(self.cfg.model, "base_layers", 0) > 0
 
@@ -419,7 +424,7 @@ class Trainer(object):
             assert self._gathered_optim_state is not None
 
     def state_dict(self, filename, training_finished=False) -> Dict[str, Dict]:
-        if self.is_moe or self.is_base_moe:
+        if self.is_moe or self.is_base_moe or self.is_moa:
             (
                 (shared_model_state_dict, shared_optimizer_state_dict),
                 (expert_model_state_dict, expert_optimizer_state_dict),
@@ -588,11 +593,13 @@ class Trainer(object):
                 or self.is_data_parallel_master
                 or self.is_moe
                 or self.is_base_moe
+                or self.is_moa
             ):
                 state = checkpoint_utils.load_checkpoint_to_cpu(
                     filename,
                     load_on_all_ranks=load_on_all_ranks,
                     is_moe=self.is_moe or self.is_base_moe,
+                    is_moa=self.is_moa,
                     arg_overrides={"replication_count": replication_count},
                 )
                 last_optim_state = state.get("last_optimizer_state", None)
@@ -911,7 +918,7 @@ class Trainer(object):
 
             # MoE training with --batch-size or --max-sentences set
             if (
-                self.is_moe
+                (self.is_moe or self.is_moa)
                 and getattr(self.cfg.dataset, "batch_size", None) is not None
             ):
                 try:
@@ -1080,6 +1087,7 @@ class Trainer(object):
                     and self.cfg.distributed_training.ddp_backend != "slowmo"
                     and not self.is_moe
                     and not self.is_base_moe
+                    and not self.is_moa
                 ):
                     self._check_grad_norms(grad_norm)
                 if not torch.isfinite(grad_norm).all():
@@ -1265,7 +1273,10 @@ class Trainer(object):
 
             try:
                 if (
-                    getattr(self.cfg.model, "moe_freq", 0) > 0
+                    (
+                        getattr(self.cfg.model, "moe_freq", 0) > 0
+                        or getattr(self.cfg.model, "moa_freq", 0) > 0
+                    )
                     and getattr(self.cfg.dataset, "batch_size", None) is not None
                 ):
                     fixed_src_seq_length = (

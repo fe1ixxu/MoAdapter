@@ -443,7 +443,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         results: Dict[str, Optional[Tensor]] = {"inner_states": [x]}
-        loss_keys = ["moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
         for key in loss_keys:
             results[key] = []
             if encoder_out is not None and key in encoder_out:
