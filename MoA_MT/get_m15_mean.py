@@ -27,7 +27,7 @@ def get_m15_mean(args):
         ## BLEU
         with open(args.input + bleu_file) as f:
             l = f.readlines()
-        bleu = float(l[0].split("BLEU4 = ")[1][:5])
+        bleu = float(l[0].split("|")[6].split(" ")[2])
 
         all_bleu_scores.append(bleu)
         if lang in LOW:
@@ -40,8 +40,8 @@ def get_m15_mean(args):
         return round(sum(scores)/len(scores) ,2)
     print(f"Avg of all BLEU is {get_mean(all_bleu_scores)}")
     print(f"Avg of high resource BLEU is {get_mean(high_bleu_scores)}")
-    print(f"Avg of low resource BLEU is {get_mean(low_bleu_scores)}")
-    print(f"Avg of very low resource is {get_mean(very_low_bleu_scores)}")
+    print(f"Avg of median resource BLEU is {get_mean(low_bleu_scores)}")
+    print(f"Avg of low resource is {get_mean(very_low_bleu_scores)}")
 
 
 
