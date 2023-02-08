@@ -101,9 +101,17 @@ def main(cfg: FairseqConfig) -> None:
 
     assert cfg.criterion, "Please specify criterion to train a model"
     if (
-        getattr(cfg.model, "moe_freq", 0) > 0
-        and getattr(cfg.model, "moe_expert_count", 0)
-        < distributed_utils.get_global_world_size()
+        (
+            getattr(cfg.model, "moa_freq", 0) > 0
+            and getattr(cfg.model, "moa_expert_count", 0)
+            < distributed_utils.get_global_world_size()
+        )
+        or
+        (
+            getattr(cfg.model, "moe_freq", 0) > 0
+            and getattr(cfg.model, "moe_expert_count", 0)
+            < distributed_utils.get_global_world_size()
+        )
     ):
         assert (
             cfg.distributed_training.ddp_backend == "fully_sharded"
@@ -114,6 +122,7 @@ def main(cfg: FairseqConfig) -> None:
         # if cfg.distributed_training.use_sharded_state: assert cfg.checkpoint.no_save_optimizer_state, f'--use-sharded-state requires --no-save-optimizer-state'
         extra = {
             "is_moe": getattr(cfg.model, "moe_freq", 0) > 0,
+            "is_moa": getattr(cfg.model, "moa_freq", 0) > 0,
         }
 
         with fsdp_enable_wrap(cfg.distributed_training, **extra):

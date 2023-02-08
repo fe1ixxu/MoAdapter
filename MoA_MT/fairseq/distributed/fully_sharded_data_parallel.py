@@ -52,16 +52,17 @@ class FullyShardedDataParallel(FSDP):
     """
 
     def __init__(
-        self, *args, is_moe: bool = None, use_sharded_state: bool = False, **kwargs
+        self, *args, is_moe: bool = None, is_moa: bool = None, use_sharded_state: bool = False, **kwargs
     ):
         if not has_FSDP:
             raise ImportError(
                 "Cannot find FullyShardedDataParallel. "
                 "Please install fairscale with: pip install fairscale"
             )
-        assert is_moe is not None
+        assert (is_moe or is_moa) is not None
         super().__init__(*args, **kwargs)
         self.is_moe = is_moe
+        self.is_moa = is_moa
         self.use_sharded_state = use_sharded_state
 
     @property
@@ -76,7 +77,7 @@ class FullyShardedDataParallel(FSDP):
             return super().local_state_dict(
                 destination=destination, prefix=prefix, keep_vars=keep_vars
             )
-        elif self.is_moe:
+        elif self.is_moe or self.is_moa:
             return super().state_dict(
                 destination=destination, prefix=prefix, keep_vars=keep_vars
             )
@@ -94,7 +95,7 @@ class FullyShardedDataParallel(FSDP):
     def load_state_dict(self, state_dict, strict=True, model_cfg=None):
         if self.use_sharded_state:
             return super().load_local_state_dict(state_dict, strict=strict)
-        elif self.is_moe:
+        elif self.is_moe or self.is_moa:
             return super().load_state_dict(state_dict, strict=strict)
         else:
             if not isinstance(self.process_group, DummyProcessGroup):

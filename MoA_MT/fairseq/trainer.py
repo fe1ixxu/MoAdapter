@@ -632,6 +632,7 @@ class Trainer(object):
                 and not self.tpu
                 and not self.is_moe
                 and not self.is_base_moe
+                and not self.is_moa
             ):
                 state = distributed_utils.broadcast_object(
                     state,

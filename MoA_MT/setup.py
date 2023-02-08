@@ -229,7 +229,7 @@ def do_setup(package_data):
             "scipy==1.6.1",
             "submitit",
             "wandb",
-            "tensorboardX"
+            "tensorboardX",
         ],
         dependency_links=dependency_links,
         packages=find_packages(
