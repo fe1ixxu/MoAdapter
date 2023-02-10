@@ -698,6 +698,12 @@ class CheckpointConfig(FairseqDataclass):
             "help": "finetune from a pretrained model; note that meters and lr scheduler will be reset"
         },
     )
+    moa_finetune_from_model: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "finetune from a pretrained model that used for MoA pre-trained model; note that meters and lr scheduler will be reset"
+        },
+    )
     ignore_suffix: Optional[bool] = field(
         default=False,
         metadata={"help": "ignore suffix when first loading. Messes up requeue."},

@@ -125,6 +125,12 @@ class FeedForwardNetwork(nn.Module):
             dropout_module=self.dropout_module,
         )[0]
 
+class AdapterNetwork(FeedForwardNetwork):
+    def __init__(
+        self, cfg, embed_dim, ffn_dim, dropout_module=None, init_model_on_gpu=False
+    ):
+        super().__init__(cfg, embed_dim, ffn_dim, dropout_module, init_model_on_gpu)
+
 
 class TransformerEncoderLayerBase(nn.Module):
     """Encoder layer block.
@@ -1015,7 +1021,7 @@ class TransformerDecoderLayerBase(nn.Module):
             )
             moa_module = self.moa_layer
             # TODO: l_aux modification
-            x, l_aux = moa_module(x, prefix_tokens=prefix_tokens)
+            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens)
             pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
             pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
@@ -1103,7 +1109,7 @@ def make_adapters(cfg, embed_dim, expert_ffn_dim, dropout_module) -> nn.ModuleLi
                 start_seed + ddp_rank * local_moa_expert_count + i
             ):
                 adapter_list.append(
-                    FeedForwardNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
+                    AdapterNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
                 )
 
     else:  # less adapters than gpus
@@ -1113,7 +1119,7 @@ def make_adapters(cfg, embed_dim, expert_ffn_dim, dropout_module) -> nn.ModuleLi
         # initialize each FFN with the same seed on different GPUs
         with utils.set_torch_seed(start_seed + ddp_rank % cfg.moa_expert_count):
             adapter_list.append(
-                FeedForwardNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
+                AdapterNetwork(cfg, embed_dim, expert_ffn_dim, dropout_module)
             )
     adapters = nn.ModuleList(adapter_list)
     return adapters

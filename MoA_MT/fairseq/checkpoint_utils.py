@@ -324,6 +324,9 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
             "can not be specified together: " + str(cfg)
         )
 
+    if cfg.moa_finetune_from_model:
+        checkpoint_path = [checkpoint_path, cfg.moa_finetune_from_model]
+
     extra_state = trainer.load_checkpoint(
         checkpoint_path,
         reset_optimizer,

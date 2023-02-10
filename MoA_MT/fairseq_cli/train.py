@@ -42,6 +42,7 @@ from fairseq.file_io import PathManager
 from fairseq.logging import meters, metrics, progress_bar
 from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer, dummy_auks_check
+from fairseq.dataclass.constants import KEEP_KEY_WORDS
 
 
 def is_expert_param(p):
@@ -118,6 +119,16 @@ def main(cfg: FairseqConfig) -> None:
         ), "num_experts < num_gpus only supported by FSDP"
 
     # Build model and criterion
+    model = task.build_model(cfg.model)
+    # Freeze parameters except for adapters. FSDP originally only allows that all parameters must
+    # have the same status of requires_grad. I modify fairscale library that only accepts parameters
+    # with requires_grad=True
+    if model.cfg.moa_freq > 0:
+        for module_name, parameters in model.named_parameters():
+            for keep_module_name in KEEP_KEY_WORDS:
+                if keep_module_name not in module_name:
+                    parameters.requires_grad = False
+
     if cfg.distributed_training.ddp_backend == "fully_sharded":
         # if cfg.distributed_training.use_sharded_state: assert cfg.checkpoint.no_save_optimizer_state, f'--use-sharded-state requires --no-save-optimizer-state'
         extra = {
@@ -126,9 +137,7 @@ def main(cfg: FairseqConfig) -> None:
         }
 
         with fsdp_enable_wrap(cfg.distributed_training, **extra):
-            model = fsdp_wrap(task.build_model(cfg.model))
-    else:
-        model = task.build_model(cfg.model)
+            model = fsdp_wrap(model)
     criterion = task.build_criterion(cfg.criterion)
 
     logger.info(model)
