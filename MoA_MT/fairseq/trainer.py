@@ -31,6 +31,7 @@ from fairseq.models.ema import build_ema
 from fairseq.nan_detector import NanDetector
 from fairseq.optim import lr_scheduler
 from fairseq.utils import safe_hasattr
+from fairseq.dataclass.constants import KEEP_KEY_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,7 @@ class Trainer(object):
         if (
             (self.is_fsdp)
             or (self.is_moe and not has_alt_ffn_dim)
+            or (self.is_moa and not has_alt_ffn_dim)
             or getattr(self.cfg.model, "base_layers", 0) > 0
         ):
             return True
@@ -246,7 +248,7 @@ class Trainer(object):
     @property
     def checkpoint_suffix(self) -> str:
         """Suffix to add to the checkpoint file name."""
-        if (self.is_moe or self.is_base_moe) and not self.use_sharded_state:
+        if (self.is_moe or self.is_base_moe or self.is_moa) and not self.use_sharded_state:
             return self.cfg.checkpoint.checkpoint_suffix
         elif self.is_fsdp:
             return self.cfg.checkpoint.checkpoint_suffix + "-shard{0}".format(
@@ -395,6 +397,10 @@ class Trainer(object):
         return getattr(self.cfg.model, "moe_freq", 0) > 0
 
     @property
+    def is_moa(self):
+        return getattr(self.cfg.model, "moa_freq", 0) > 0
+
+    @property
     def is_base_moe(self) -> bool:
         return getattr(self.cfg.model, "base_layers", 0) > 0
 
@@ -419,7 +425,7 @@ class Trainer(object):
             assert self._gathered_optim_state is not None
 
     def state_dict(self, filename, training_finished=False) -> Dict[str, Dict]:
-        if self.is_moe or self.is_base_moe:
+        if self.is_moe or self.is_base_moe or self.is_moa:
             (
                 (shared_model_state_dict, shared_optimizer_state_dict),
                 (expert_model_state_dict, expert_optimizer_state_dict),
@@ -544,6 +550,11 @@ class Trainer(object):
                 cast_to_fp32=not self.cfg.common.memory_efficient_fp16,
             )
             state_dict["extra_state"].update(extra_state)
+            if self.is_moa and "shared.pt" in filename:
+                # Do not save the non-adapter parameters for MOA models
+                logger.info(f"Remove shared weights in {filename} for MoA model")
+                self.remove_model_weights(state_dict, KEEP_KEY_WORDS)
+
             if self.should_save_checkpoint_on_current_rank:
                 checkpoint_utils.torch_persistent_save(
                     state_dict,
@@ -553,6 +564,13 @@ class Trainer(object):
                 )
             logger.info(f"Finished saving checkpoint to {os.path.abspath(filename)}")
 
+    def remove_model_weights(self, state_dict, keep_key_words):
+        module_names = list(state_dict['model'].keys())
+        for module_name in module_names:
+            for keep_word in keep_key_words:
+                if keep_word not in module_name:
+                    state_dict['model'].pop(module_name)
+        
     def load_checkpoint(
         self,
         filename,
@@ -570,6 +588,10 @@ class Trainer(object):
         extra_state, self._optim_history, last_optim_state = None, [], None
 
         is_distributed = self.data_parallel_world_size > 1
+        pretrained_filename = None
+        if isinstance(filename, List):
+            assert self.is_moa, "--moa-finetune-from-model only applies to MOA model!"
+            filename, pretrained_filename = filename
         bexists = PathManager.isfile(filename)
         if bexists:
             logger.info(f"Preparing to load checkpoint {filename}")
@@ -588,11 +610,13 @@ class Trainer(object):
                 or self.is_data_parallel_master
                 or self.is_moe
                 or self.is_base_moe
-            ):
+                or self.is_moa
+            ):  
                 state = checkpoint_utils.load_checkpoint_to_cpu(
                     filename,
                     load_on_all_ranks=load_on_all_ranks,
                     is_moe=self.is_moe or self.is_base_moe,
+                    is_moa=self.is_moa,
                     arg_overrides={"replication_count": replication_count},
                 )
                 last_optim_state = state.get("last_optimizer_state", None)
@@ -625,6 +649,7 @@ class Trainer(object):
                 and not self.tpu
                 and not self.is_moe
                 and not self.is_base_moe
+                and not self.is_moa
             ):
                 state = distributed_utils.broadcast_object(
                     state,
@@ -674,7 +699,7 @@ class Trainer(object):
                     logger.info(self.model)
 
                 self.model.load_state_dict(
-                    state["model"], strict=True, model_cfg=self.cfg.model
+                    state["model"], strict=True if not pretrained_filename else False, model_cfg=self.cfg.model
                 )
                 # save memory for later steps
                 del state["model"]
@@ -691,6 +716,29 @@ class Trainer(object):
                 )
             extra_state = state["extra_state"]
             self._optim_history = state["optimizer_history"]
+
+        if pretrained_filename:
+            load_on_all_ranks = (
+                self.cfg.checkpoint.load_checkpoint_on_all_dp_ranks
+                # TPUs don't support broadcast yet, so load checkpoints
+                # on every worker for now
+                or self.tpu
+                # FSDP requires loading checkpoint shards on all ranks
+                or (self.is_fsdp)
+                or getattr(self.cfg.model, "base_layers", 0) > 0
+            )
+
+            pretrained_state = checkpoint_utils.load_checkpoint_to_cpu(
+                pretrained_filename,
+                load_on_all_ranks=load_on_all_ranks,
+                is_moe=False,
+                is_moa=False,
+                arg_overrides={"replication_count": replication_count},
+            )
+            self.model.load_state_dict(
+                pretrained_state["model"], strict=False, model_cfg=self.cfg.model
+            )
+            del pretrained_state["model"]
 
         if last_optim_state is not None and not reset_optimizer:
             # rebuild optimizer after loading model, since params may have changed
@@ -911,7 +959,7 @@ class Trainer(object):
 
             # MoE training with --batch-size or --max-sentences set
             if (
-                self.is_moe
+                (self.is_moe or self.is_moa)
                 and getattr(self.cfg.dataset, "batch_size", None) is not None
             ):
                 try:
@@ -1080,6 +1128,7 @@ class Trainer(object):
                     and self.cfg.distributed_training.ddp_backend != "slowmo"
                     and not self.is_moe
                     and not self.is_base_moe
+                    and not self.is_moa
                 ):
                     self._check_grad_norms(grad_norm)
                 if not torch.isfinite(grad_norm).all():
@@ -1265,7 +1314,10 @@ class Trainer(object):
 
             try:
                 if (
-                    getattr(self.cfg.model, "moe_freq", 0) > 0
+                    (
+                        getattr(self.cfg.model, "moe_freq", 0) > 0
+                        or getattr(self.cfg.model, "moa_freq", 0) > 0
+                    )
                     and getattr(self.cfg.dataset, "batch_size", None) is not None
                 ):
                     fixed_src_seq_length = (

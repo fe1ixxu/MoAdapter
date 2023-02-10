@@ -106,6 +106,17 @@ def _main(cfg: DictConfig, output_file):
         moe_freq = 1
     else:
         moe_freq = 0
+
+    if (
+        cfg.common_eval.is_moa
+        and torch.distributed.is_initialized()
+        and torch.distributed.get_world_size() > 1
+    ):
+        cfg.checkpoint.checkpoint_suffix = f"-rank-{torch.distributed.get_rank()}"
+        moa_freq = 1
+    else:
+        moa_freq = 0
+
     models, saved_cfg = checkpoint_utils.load_model_ensemble(
         utils.split_paths(cfg.common_eval.path),
         arg_overrides=overrides,
@@ -114,6 +125,7 @@ def _main(cfg: DictConfig, output_file):
         strict=(cfg.checkpoint.checkpoint_shard_count == 1),
         num_shards=cfg.checkpoint.checkpoint_shard_count,
         is_moe=moe_freq > 0,
+        is_moa=moa_freq > 0,
     )
 
     # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
@@ -155,7 +167,8 @@ def _main(cfg: DictConfig, output_file):
     num_shards = cfg.distributed_training.distributed_world_size
     shard_id = cfg.distributed_training.distributed_rank
     # We need all GPUs to process the same batch
-    if cfg.common_eval.is_moe or cfg.common_eval.moe_generation:
+    if (cfg.common_eval.is_moe or cfg.common_eval.moe_generation) 
+    or (cfg.common_eval.is_moa or cfg.common_eval.moa_generation):
         num_shards = 1
         shard_id = 0
     itr = task.get_batch_iterator(

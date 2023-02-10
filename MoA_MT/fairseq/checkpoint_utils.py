@@ -161,7 +161,7 @@ def save_checkpoint(
 
         for cp in checkpoints[1:]:
             copy_or_symlink(src=checkpoints[0], dest=cp)
-            if (trainer.is_moe or trainer.is_base_moe) and (
+            if (trainer.is_moe or trainer.is_base_moe or trainer.is_moa) and (
                 trainer.is_data_parallel_master
                 or (trainer.is_fsdp and trainer.use_sharded_state)
             ):
@@ -181,6 +181,7 @@ def save_checkpoint(
         cfg,
         end_of_epoch,
         trainer.is_moe or trainer.is_base_moe,
+        trainer.is_moa,
         suffix,
         trainer.is_data_parallel_master,
     )
@@ -190,6 +191,7 @@ def delete_old_checkpoint_files(
     cfg: DictConfig,
     end_of_epoch: bool,
     is_moe: bool,
+    is_moa: bool,
     suffix: str,
     is_data_parallel_master: bool,
 ):
@@ -218,7 +220,7 @@ def delete_old_checkpoint_files(
                 PathManager.rm(old_chk)
 
         suffixes = [suffix]
-        if is_moe and is_data_parallel_master:
+        if (is_moe or is_moa) and is_data_parallel_master:
             suffixes.append("-shared")
 
         # remove old checkpoints; checkpoints are sorted in descending order
@@ -322,6 +324,9 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
             "can not be specified together: " + str(cfg)
         )
 
+    if cfg.moa_finetune_from_model:
+        checkpoint_path = [checkpoint_path, cfg.moa_finetune_from_model]
+
     extra_state = trainer.load_checkpoint(
         checkpoint_path,
         reset_optimizer,
@@ -399,7 +404,7 @@ def get_paths_to_load(local_path, suffix="rank-", replication_count=1):
 
 
 def load_checkpoint_to_cpu(
-    path, arg_overrides=None, load_on_all_ranks=False, is_moe=False
+    path, arg_overrides=None, load_on_all_ranks=False, is_moe=False, is_moa=False,
 ) -> dict:
     """Loads a checkpoint to CPU (with upgrading for backward compatibility).
 
@@ -441,10 +446,10 @@ def load_checkpoint_to_cpu(
     )
     paths_to_load = get_paths_to_load(
         local_path,
-        suffix="rank-" if is_moe else "shard",
+        suffix="rank-" if is_moe or is_moa else "shard",
         replication_count=replication_count,
     )
-    if is_moe and os.path.exists(shared_path):
+    if (is_moe or is_moa) and os.path.exists(shared_path):
         expert_state = moe_checkpoint_utils.load_expert_state(
             paths_to_load
         )  # Possibly merge experts
@@ -494,6 +499,7 @@ def load_model_ensemble(
     num_shards=1,
     state=None,
     is_moe=False,
+    is_moa=False,
 ):
     """Loads an ensemble of models.
 
@@ -515,6 +521,7 @@ def load_model_ensemble(
         num_shards,
         state,
         is_moe=is_moe,
+        is_moa=is_moa,
     )
     return ensemble, args
 
@@ -603,9 +610,10 @@ def load_model_ensemble_and_task(
     num_shards=1,
     state=None,
     is_moe=False,
+    is_moa=False,
 ):
 
-    logger.info("load_model_ensemble_and_task is_moe={}".format(is_moe))
+    logger.info("load_model_ensemble_and_task is_moe={} and is_moa={}".format(is_moe, is_moa))
 
     assert state is None or len(filenames) == 1
 
@@ -635,6 +643,7 @@ def load_model_ensemble_and_task(
                     filename,
                     arg_overrides,
                     is_moe=is_moe,
+                    is_moa=is_moa,
                 )
             if "args" in state and state["args"] is not None:
                 cfg = convert_namespace_to_omegaconf(state["args"])

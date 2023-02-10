@@ -303,7 +303,6 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
             for i in range(EVAL_BLEU_ORDER):
                 logging_output["_bleu_counts_" + str(i)] = bleu.counts[i]
                 logging_output["_bleu_totals_" + str(i)] = bleu.totals[i]
-
         return loss, sample_size, logging_output
 
     def _inference_with_bleu(self, generator, sample, model):

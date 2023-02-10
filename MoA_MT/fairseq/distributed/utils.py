@@ -316,6 +316,11 @@ def distributed_init(cfg: FairseqConfig):
             and getattr(cfg.model, "moe_expert_count", 0) > 0
         )
         or getattr(cfg.model, "base_layers", 0) > 0
+        or 
+        (
+            getattr(cfg.model, "moa_freq", 0) > 0
+            and getattr(cfg.model, "moa_expert_count", 0) > 0
+        )
     ):
         cfg.checkpoint.checkpoint_suffix = (
             f"-rank-{cfg.distributed_training.distributed_rank}"

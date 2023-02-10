@@ -228,6 +228,8 @@ def do_setup(package_data):
             "scikit-learn==0.24.1",
             "scipy==1.6.1",
             "submitit",
+            "wandb",
+            "tensorboardX",
         ],
         dependency_links=dependency_links,
         packages=find_packages(
