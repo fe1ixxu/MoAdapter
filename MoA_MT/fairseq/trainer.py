@@ -618,6 +618,7 @@ class Trainer(object):
                     is_moe=self.is_moe or self.is_base_moe,
                     is_moa=self.is_moa,
                     arg_overrides={"replication_count": replication_count},
+                    other_path=pretrained_filename,
                 )
                 last_optim_state = state.get("last_optimizer_state", None)
                 if last_optim_state == -1:
@@ -699,7 +700,7 @@ class Trainer(object):
                     logger.info(self.model)
 
                 self.model.load_state_dict(
-                    state["model"], strict=True if not pretrained_filename else False, model_cfg=self.cfg.model
+                    state["model"], strict=True, model_cfg=self.cfg.model
                 )
                 # save memory for later steps
                 del state["model"]
@@ -716,29 +717,6 @@ class Trainer(object):
                 )
             extra_state = state["extra_state"]
             self._optim_history = state["optimizer_history"]
-
-        if pretrained_filename:
-            load_on_all_ranks = (
-                self.cfg.checkpoint.load_checkpoint_on_all_dp_ranks
-                # TPUs don't support broadcast yet, so load checkpoints
-                # on every worker for now
-                or self.tpu
-                # FSDP requires loading checkpoint shards on all ranks
-                or (self.is_fsdp)
-                or getattr(self.cfg.model, "base_layers", 0) > 0
-            )
-
-            pretrained_state = checkpoint_utils.load_checkpoint_to_cpu(
-                pretrained_filename,
-                load_on_all_ranks=load_on_all_ranks,
-                is_moe=False,
-                is_moa=False,
-                arg_overrides={"replication_count": replication_count},
-            )
-            self.model.load_state_dict(
-                pretrained_state["model"], strict=False, model_cfg=self.cfg.model
-            )
-            del pretrained_state["model"]
 
         if last_optim_state is not None and not reset_optimizer:
             # rebuild optimizer after loading model, since params may have changed

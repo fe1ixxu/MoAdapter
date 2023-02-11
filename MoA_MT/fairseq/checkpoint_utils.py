@@ -404,7 +404,7 @@ def get_paths_to_load(local_path, suffix="rank-", replication_count=1):
 
 
 def load_checkpoint_to_cpu(
-    path, arg_overrides=None, load_on_all_ranks=False, is_moe=False, is_moa=False,
+    path, arg_overrides=None, load_on_all_ranks=False, is_moe=False, is_moa=False, other_path=None,
 ) -> dict:
     """Loads a checkpoint to CPU (with upgrading for backward compatibility).
 
@@ -420,6 +420,9 @@ def load_checkpoint_to_cpu(
 
     There's currently no support for > 1 but < all processes loading the
     checkpoint on each node.
+
+    other_path is used for combing states between current weights and overrided model weighs.
+    now it only supports MoA model.
     """
     local_path = PathManager.get_local_path(path)
     # The locally cached file returned by get_local_path() may be stale for
@@ -449,13 +452,25 @@ def load_checkpoint_to_cpu(
         suffix="rank-" if is_moe or is_moa else "shard",
         replication_count=replication_count,
     )
-    if (is_moe or is_moa) and os.path.exists(shared_path):
+
+    assert is_moa and other_path, "other_path and is_moa should be availale at the same time"
+    if is_moe and os.path.exists(shared_path):
         expert_state = moe_checkpoint_utils.load_expert_state(
             paths_to_load
         )  # Possibly merge experts
         shared_state = torch_load_cpu(shared_path)
         state = moe_checkpoint_utils.merge_expert_and_shared_state(
             expert_state, shared_state
+        )
+    elif is_moa and os.path.exists(shared_path) and other_path:
+        adapter_state = moe_checkpoint_utils.load_expert_state(
+            paths_to_load
+        )  # Possibly merge experts
+        shared_state = torch_load_cpu(shared_path)
+        moa_pretrain_state = torch_load_cpu(other_path)
+        shared_state['model'] = {**shared_state['model'], **moa_pretrain_state['model']}
+        state = moe_checkpoint_utils.merge_expert_and_shared_state(
+            adapter_state, shared_state
         )
     else:
         if len(paths_to_load) > 1:
@@ -500,6 +515,7 @@ def load_model_ensemble(
     state=None,
     is_moe=False,
     is_moa=False,
+    other_path=None,
 ):
     """Loads an ensemble of models.
 
@@ -522,6 +538,7 @@ def load_model_ensemble(
         state,
         is_moe=is_moe,
         is_moa=is_moa,
+        other_path=other_path,
     )
     return ensemble, args
 
@@ -611,6 +628,7 @@ def load_model_ensemble_and_task(
     state=None,
     is_moe=False,
     is_moa=False,
+    other_path=None,
 ):
 
     logger.info("load_model_ensemble_and_task is_moe={} and is_moa={}".format(is_moe, is_moa))
@@ -644,6 +662,7 @@ def load_model_ensemble_and_task(
                     arg_overrides,
                     is_moe=is_moe,
                     is_moa=is_moa,
+                    other_path=other_path,
                 )
             if "args" in state and state["args"] is not None:
                 cfg = convert_namespace_to_omegaconf(state["args"])

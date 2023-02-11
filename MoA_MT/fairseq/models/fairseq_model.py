@@ -160,12 +160,13 @@ class BaseFairseqModel(nn.Module):
             if hasattr(m, "set_num_updates") and m != self:
                 m.set_num_updates(num_updates)
 
-    def prepare_for_inference_(self, cfg: DictConfig, moe_disable_padding=True):
+    def prepare_for_inference_(self, cfg: DictConfig, moe_disable_padding=True, moa_disable_padding=True):
         from fairseq.modules.moe import MOELayer
+        from fairseq.modules.moa import MOALayer
 
         """Prepare model for inference."""
         kwargs = {}
-        kwargs["beamable_mm_beam_size"] = (
+        kwargs["beamable_mm_beam_size"] = (\
             None
             if getattr(cfg.generation, "no_beamable_mm", False)
             else getattr(cfg.generation, "beam", 5)
@@ -177,6 +178,8 @@ class BaseFairseqModel(nn.Module):
         self.make_generation_fast_(**kwargs)
         for n, m in self.named_modules():
             if isinstance(m, MOELayer) and moe_disable_padding:
+                m.prepare_for_inference_()
+            if isinstance(m, MOALayer) and moa_disable_padding:
                 m.prepare_for_inference_()
 
     def make_generation_fast_(self, **kwargs):

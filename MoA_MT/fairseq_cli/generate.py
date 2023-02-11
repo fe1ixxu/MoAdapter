@@ -126,6 +126,7 @@ def _main(cfg: DictConfig, output_file):
         num_shards=cfg.checkpoint.checkpoint_shard_count,
         is_moe=moe_freq > 0,
         is_moa=moa_freq > 0,
+        other_path=cfg.checkpoint.moa_finetune_from_model if moa_freq > 0 else None,
     )
 
     # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
@@ -167,8 +168,7 @@ def _main(cfg: DictConfig, output_file):
     num_shards = cfg.distributed_training.distributed_world_size
     shard_id = cfg.distributed_training.distributed_rank
     # We need all GPUs to process the same batch
-    if (cfg.common_eval.is_moe or cfg.common_eval.moe_generation) 
-    or (cfg.common_eval.is_moa or cfg.common_eval.moa_generation):
+    if (cfg.common_eval.is_moe or cfg.common_eval.moe_generation) or (cfg.common_eval.is_moa or cfg.common_eval.moa_generation):
         num_shards = 1
         shard_id = 0
     itr = task.get_batch_iterator(
