@@ -5,7 +5,7 @@
 
 import math
 from statistics import median
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, List
 
 import torch
 import torch.distributed as dist
@@ -317,6 +317,7 @@ class MOATop2Gate(torch.nn.Module):
         use_tutel=False,
         init_model_on_gpu=False,
         analyse_moa_gating=False,
+        method="token",
     ) -> None:
         super().__init__()
         self.wg = Linear(
@@ -329,8 +330,32 @@ class MOATop2Gate(torch.nn.Module):
         self.batch_prioritized_routing = batch_prioritized_routing
         self.use_tutel = use_tutel
         self.analyse = analyse_moa_gating
+        self.method=method
 
-    def forward(self, input: torch.Tensor, mask: Optional[torch.Tensor] = None, moa_eval_capacity_length: Optional[int] = None, prefix_tokens: Optional[torch.Tensor] = None) -> Tuple[Tensor, Tensor, Tensor]:  # type: ignore
+    def forward(
+        self, 
+        input: torch.Tensor, 
+        mask: Optional[torch.Tensor] = None, 
+        moa_eval_capacity_length: Optional[int] = None, 
+        prefix_tokens: Optional[torch.Tensor] = None,
+        lang_features: Optional[torch.Tensor] = None,
+        input_shape: Optional[List] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor]:  # type: ignore
+        if self.method == "lang":
+            reshape_input_size = input.shape
+            del input
+            ## lang_features: [bz, dim]
+            ## input_shape: [bz, seq_len, dim]
+            lang_features = lang_features.unsqueeze(1).expand(input_shape)
+            lang_features = lang_features.reshape(-1, input_shape[-1])
+            input = torch.zeros(
+                reshape_input_size,
+                dtype=lang_features.dtype,
+                layout=lang_features.layout,
+                device=lang_features.device,
+            )
+            input[:lang_features.shape[0], :] = lang_features
+
         logits = self.wg(input)
         return top2gating(
             logits,

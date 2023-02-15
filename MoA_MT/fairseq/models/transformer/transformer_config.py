@@ -240,6 +240,10 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "Frequency at which we insert Mixture of Adapter layers"},
     )
+    moa_detail_assign: str = field(
+        default="",
+        metadata={"help": "Specific assignment for Mixture of Adapter layers, e.g., '1,0,0,0,0,1' means adapter layers are only employed at the first and last encoder or decoder layer"},
+    )
     encoder_moe_freq: int = field(
         default=0,
         metadata={
@@ -273,6 +277,10 @@ class TransformerConfig(FairseqDataclass):
     moa_second_expert_policy: str = field(
         default="sampling",
         metadata={"help": "policy for second adapter, options: all/sampling/random"},
+    )
+    moa_gate_method: str = field(
+        default="token", 
+        metadata={"help": "Gating method, options: token/lang"}
     )
     moe_normalize_gate_prob_before_dropping: bool = field(
         default=False,

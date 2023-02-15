@@ -5,7 +5,7 @@
 
 
 import math
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, List
 
 import torch
 import torch.nn.functional as F
@@ -162,6 +162,7 @@ class MOATop1Gate(torch.nn.Module):
         moa_eval_capacity_token_fraction=EVAL_CAPACITY_TOKEN_FRACTION,
         use_tutel=False,
         init_model_on_gpu=False,
+        method="token",
     ) -> None:
         # TODO: merge this to top2gate.py
         #
@@ -174,6 +175,7 @@ class MOATop1Gate(torch.nn.Module):
         self.capacity_factor = capacity_factor
         self.moa_eval_capacity_token_fraction = moa_eval_capacity_token_fraction
         self.use_tutel = use_tutel
+        self.method=method
 
     def forward(
         self,
@@ -181,7 +183,24 @@ class MOATop1Gate(torch.nn.Module):
         mask: Optional[torch.Tensor] = None,
         moa_eval_capacity_length: Optional[int] = None,
         prefix_tokens: Optional[torch.Tensor] = None,
+        lang_features: Optional[torch.Tensor] = None,
+        input_shape: Optional[List] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Dict]:  # type: ignore
+        if self.method == "lang":
+            reshape_input_size = input.shape
+            del input
+            ## lang_features: [bz, dim]
+            ## input_shape: [bz, seq_len, dim]
+            lang_features = lang_features.unsqueeze(1).expand(input_shape)
+            lang_features = lang_features.reshape(-1, input_shape[-1])
+            input = torch.zeros(
+                reshape_input_size,
+                dtype=lang_features.dtype,
+                layout=lang_features.layout,
+                device=lang_features.device,
+            )
+            input[:lang_features.shape[0], :] = lang_features
+
         logits = self.wg(input)
         return top1gating(
             logits,

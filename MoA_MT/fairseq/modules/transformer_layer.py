@@ -260,6 +260,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     use_fp32=cfg.moa_gating_use_fp32,
                     moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
                     use_tutel=cfg.use_tutel_moa,
+                    method=cfg.moa_gate_method,
                 )
             else:
                 gate = MOATop2Gate(
@@ -273,6 +274,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     use_tutel=cfg.use_tutel_moa,
                     init_model_on_gpu=cfg.init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
+                    method=cfg.moa_gate_method,
                 )
             adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
@@ -492,7 +494,7 @@ class TransformerEncoderLayerBase(nn.Module):
             )
             moa_module = self.moa_layer
             # TODO: modify l_aux
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens)
+            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="encoder")
             pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
             pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
@@ -739,6 +741,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
                     use_tutel=cfg.use_tutel_moa,
                     init_model_on_gpu=init_model_on_gpu,
+                    method=cfg.moa_gate_method,
                 )
             else:
                 gate = MOATop2Gate(
@@ -752,6 +755,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     use_tutel=cfg.use_tutel_moa,
                     init_model_on_gpu=init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
+                    method=cfg.moa_gate_method,
                 )
             adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
@@ -1021,7 +1025,7 @@ class TransformerDecoderLayerBase(nn.Module):
             )
             moa_module = self.moa_layer
             # TODO: l_aux modification
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens)
+            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="decoder")
             pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
             pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x

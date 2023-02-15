@@ -96,9 +96,15 @@ class TransformerEncoderBase(FairseqEncoder):
             self.layers = nn.ModuleList([])
         moe_freq = max(cfg.encoder_moe_freq, cfg.moe_freq)
         moa_freq = cfg.moa_freq
+        moa_detail_assign = cfg.moa_detail_assign.split(",") # moa_detail_assign will override moa_freq
+        assert cfg.moa_detail_assign == "" or len(moa_detail_assign) == cfg.encoder_layers, \
+        "Length of moa_detail_assign should be 0 or the same as the number of encoder/decoder layer"
+
         for i in range(cfg.encoder_layers):
             is_moe_layer = moe_freq != 0 and (i + 1) % moe_freq == 0
             is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
+            if cfg.moa_detail_assign != "":
+                is_moa_layer = bool(int(moa_detail_assign[i]))
             self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer))
         self.num_layers = len(self.layers)
 

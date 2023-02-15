@@ -129,6 +129,12 @@ class MOALayer(Base):
             assert input_padding_mask.shape[0] == input.shape[0]
             assert input_padding_mask.shape[1] == input.shape[1]
         # assert input.shape[0] % len(self.experts) == 0, "num tokens must be order of number of local experts"
+        if kwargs['source'] == "encoder":
+            lang_features = input[:,0,:]
+        elif kwargs['source'] == "decoder":
+            lang_features = input[:,1,:]
+        else:
+            lang_features = None
 
         # Implement Algorithm 2 from GShard paper.
         d_model = input.shape[2]
@@ -245,6 +251,7 @@ class MOALayer(Base):
         else:
             eval_capacity_length = None
         if self.use_tutel:
+            assert lang_features is None, "Language-level gate assignment is not applicable to tutel!"
             l_aux, self.metadata, C, E, indices_, locations_, gates_ = self.gate(
                 reshaped_input,
                 reshaped_input_padding_mask,
@@ -265,6 +272,8 @@ class MOALayer(Base):
                 reshaped_input_padding_mask,
                 eval_capacity_length,
                 prefix_tokens=reshaped_prefix_tokens,
+                lang_features=lang_features,
+                input_shape=input_shape,
             )
             dispatch_mask = dispatch_mask.to(input.dtype).permute(
                 1, 2, 0
