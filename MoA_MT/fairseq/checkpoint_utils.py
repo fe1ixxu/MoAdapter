@@ -453,7 +453,6 @@ def load_checkpoint_to_cpu(
         replication_count=replication_count,
     )
 
-    assert is_moa and other_path, "other_path and is_moa should be availale at the same time"
     if is_moe and os.path.exists(shared_path):
         expert_state = moe_checkpoint_utils.load_expert_state(
             paths_to_load

@@ -27,7 +27,7 @@ def get_m15_mean(args):
         ## BLEU
         with open(args.input + bleu_file) as f:
             l = f.readlines()
-        bleu = float(l[0].split("BLEU4 = ")[1][:5])
+        bleu = float(l[0].split("=")[1].split(" ")[1])
 
         all_bleu_scores.append(bleu)
         if lang in LOW:

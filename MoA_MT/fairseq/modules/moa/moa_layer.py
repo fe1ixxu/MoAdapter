@@ -129,10 +129,11 @@ class MOALayer(Base):
             assert input_padding_mask.shape[0] == input.shape[0]
             assert input_padding_mask.shape[1] == input.shape[1]
         # assert input.shape[0] % len(self.experts) == 0, "num tokens must be order of number of local experts"
+        lang_features = None
         if kwargs['source'] == "encoder":
-            lang_features = input[:,0,:]
+            lang_features = input[:,-1,:]
         elif kwargs['source'] == "decoder":
-            lang_features = input[:,1,:]
+            lang_features = input[:,0,:]
         else:
             lang_features = None
 
