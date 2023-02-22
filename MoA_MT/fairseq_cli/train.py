@@ -104,6 +104,7 @@ def main(cfg: FairseqConfig) -> None:
     if (
         (
             getattr(cfg.model, "moa_freq", 0) > 0
+            and getattr(cfg.model, "moa_type", "moa") =="moa"
             and getattr(cfg.model, "moa_expert_count", 0)
             < distributed_utils.get_global_world_size()
         )

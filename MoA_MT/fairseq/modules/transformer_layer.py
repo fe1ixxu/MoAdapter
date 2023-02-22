@@ -252,39 +252,43 @@ class TransformerEncoderLayerBase(nn.Module):
                 )
 
         if build_moa:
-            lang_idx = None
-            if cfg.moa_top1_expert:
-                gate = MOATop1Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    use_fp32=cfg.moa_gating_use_fp32,
-                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
-                    use_tutel=cfg.use_tutel_moa,
-                    method=cfg.moa_gate_method,
+            self.moa_type = cfg.moa_type
+            if cfg.moa_type == "moa":
+                lang_idx = None
+                if cfg.moa_top1_expert:
+                    gate = MOATop1Gate(
+                        self.embed_dim,
+                        cfg.moa_expert_count,
+                        use_fp32=cfg.moa_gating_use_fp32,
+                        moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
+                        use_tutel=cfg.use_tutel_moa,
+                        method=cfg.moa_gate_method,
+                    )
+                else:
+                    gate = MOATop2Gate(
+                        self.embed_dim,
+                        cfg.moa_expert_count,
+                        cfg.moa_gating_use_fp32,
+                        cfg.moa_second_expert_policy,
+                        cfg.moa_normalize_gate_prob_before_dropping,
+                        cfg.moa_eval_capacity_token_fraction,
+                        cfg.moa_batch_prioritized_routing,
+                        use_tutel=cfg.use_tutel_moa,
+                        init_model_on_gpu=cfg.init_model_on_gpu,
+                        analyse_moa_gating=cfg.analyse_moa_gating,
+                        method=cfg.moa_gate_method,
+                    )
+                adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+                self.moa_layer = MOALayer(
+                    gate,
+                    adapters,
+                    cfg,
+                    max_positions=cfg.max_source_positions,
+                    tok_dropout=cfg.moa_eom,
+                    moa_local_drop=cfg.moa_local_drop,
                 )
-            else:
-                gate = MOATop2Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    cfg.moa_gating_use_fp32,
-                    cfg.moa_second_expert_policy,
-                    cfg.moa_normalize_gate_prob_before_dropping,
-                    cfg.moa_eval_capacity_token_fraction,
-                    cfg.moa_batch_prioritized_routing,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=cfg.init_model_on_gpu,
-                    analyse_moa_gating=cfg.analyse_moa_gating,
-                    method=cfg.moa_gate_method,
-                )
-            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
-            self.moa_layer = MOALayer(
-                gate,
-                adapters,
-                cfg,
-                max_positions=cfg.max_source_positions,
-                tok_dropout=cfg.moa_eom,
-                moa_local_drop=cfg.moa_local_drop,
-            )
+            elif cfg.moa_type == "lang_pair":
+                self.moa_layer = AdapterNetwork(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
@@ -485,17 +489,20 @@ class TransformerEncoderLayerBase(nn.Module):
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
         x = self.residual_connection(x, residual)
         if run_moa:
-            # pre_adapter - seq_len, batch_size, model_dim
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
                 tokens[:, self.prefix_token_positions]
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
             moa_module = self.moa_layer
-            # TODO: modify l_aux
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="encoder")
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            if self.moa_type == "moa":
+                # pre_adapter - seq_len, batch_size, model_dim
+                pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+                # TODO: modify l_aux
+                pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="encoder")
+                pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            elif self.moa_type == "lang_pair":
+                pre_adapter_x = moa_module(pre_adapter_x)
             pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
         
@@ -729,43 +736,47 @@ class TransformerDecoderLayerBase(nn.Module):
                 )
 
         if build_moa:
-            lang_idx = None
-            if cfg.cmr_log_lang_gates:
-                lang_idx = getattr(cfg, "lang_idx")
-                assert lang_idx is not None, cfg
-            if cfg.moa_top1_expert:
-                gate = MOATop1Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    use_fp32=cfg.moa_gating_use_fp32,
-                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=init_model_on_gpu,
-                    method=cfg.moa_gate_method,
+            self.moa_type = cfg.moa_type
+            if cfg.moa_type == "moa":
+                lang_idx = None
+                if cfg.cmr_log_lang_gates:
+                    lang_idx = getattr(cfg, "lang_idx")
+                    assert lang_idx is not None, cfg
+                if cfg.moa_top1_expert:
+                    gate = MOATop1Gate(
+                        self.embed_dim,
+                        cfg.moa_expert_count,
+                        use_fp32=cfg.moa_gating_use_fp32,
+                        moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
+                        use_tutel=cfg.use_tutel_moa,
+                        init_model_on_gpu=init_model_on_gpu,
+                        method=cfg.moa_gate_method,
+                    )
+                else:
+                    gate = MOATop2Gate(
+                        self.embed_dim,
+                        cfg.moa_expert_count,
+                        cfg.moa_gating_use_fp32,
+                        cfg.moa_second_expert_policy,
+                        cfg.moa_normalize_gate_prob_before_dropping,
+                        cfg.moa_eval_capacity_token_fraction,
+                        cfg.moa_batch_prioritized_routing,
+                        use_tutel=cfg.use_tutel_moa,
+                        init_model_on_gpu=init_model_on_gpu,
+                        analyse_moa_gating=cfg.analyse_moa_gating,
+                        method=cfg.moa_gate_method,
+                    )
+                adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
+                self.moa_layer = MOALayer(
+                    gate,
+                    adapters,
+                    cfg,
+                    max_positions=cfg.max_target_positions,
+                    tok_dropout=cfg.moa_eom,
+                    moa_local_drop=cfg.moa_local_drop,
                 )
-            else:
-                gate = MOATop2Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    cfg.moa_gating_use_fp32,
-                    cfg.moa_second_expert_policy,
-                    cfg.moa_normalize_gate_prob_before_dropping,
-                    cfg.moa_eval_capacity_token_fraction,
-                    cfg.moa_batch_prioritized_routing,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=init_model_on_gpu,
-                    analyse_moa_gating=cfg.analyse_moa_gating,
-                    method=cfg.moa_gate_method,
-                )
-            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
-            self.moa_layer = MOALayer(
-                gate,
-                adapters,
-                cfg,
-                max_positions=cfg.max_target_positions,
-                tok_dropout=cfg.moa_eom,
-                moa_local_drop=cfg.moa_local_drop,
-            )
+            elif cfg.moa_type == "lang_pair":
+                self.moa_layer = AdapterNetwork(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -1017,7 +1028,6 @@ class TransformerDecoderLayerBase(nn.Module):
         x = self.residual_connection(x, residual, alpha=self.alpha2)
 
         if self.is_moa_layer:
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
                 tokens[:, self.prefix_token_positions]
                 if tokens is not None and self.prefix_token_positions is not None
@@ -1025,8 +1035,13 @@ class TransformerDecoderLayerBase(nn.Module):
             )
             moa_module = self.moa_layer
             # TODO: l_aux modification
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="decoder")
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            if self.moa_type == "moa":
+                # pre_adapter - seq_len, batch_size, model_dim
+                pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+                pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="decoder")
+                pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
+            elif self.moa_type == "lang_pair":
+                pre_adapter_x = moa_module(pre_adapter_x)
             pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
 

@@ -282,6 +282,10 @@ class TransformerConfig(FairseqDataclass):
         default="token", 
         metadata={"help": "Gating method, options: token/lang"}
     )
+    moa_type: str = field(
+        default="moa", 
+        metadata={"help": "Adapter method, options: moa/lang_pair/lang"}
+    )
     moe_normalize_gate_prob_before_dropping: bool = field(
         default=False,
         metadata={
@@ -430,14 +434,6 @@ class TransformerConfig(FairseqDataclass):
     )
     use_fused_softmax: bool = field(
         default=False, metadata={"help": "use Megatron softmax kernel"}
-    )
-
-    run_ed: bool = field(
-        default=False, metadata={"help": "whether run with expert distillation"}
-    )
-
-    ed_method: str = field(
-        default="mse", metadata={"help": "Method for calculating ed loss"}
     )
 
     no_emb_dropout: Optional[bool] = field(
