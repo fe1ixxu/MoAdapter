@@ -1835,4 +1835,4 @@ def dummy_auks_check(trainer: Trainer, save_dir: str) -> None:
     if trainer.should_save_checkpoint_on_current_rank:
         with PathManager.open(dummy_fname, "wb") as f:
             logger.debug(f.name)
-        PathManager.rm(dummy_fname)
+        # PathManager.rm(dummy_fname)

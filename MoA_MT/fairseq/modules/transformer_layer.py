@@ -503,7 +503,7 @@ class TransformerEncoderLayerBase(nn.Module):
                 pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
             elif self.moa_type == "lang_pair":
                 pre_adapter_x = moa_module(pre_adapter_x)
-            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
         
         if not self.normalize_before:
@@ -1042,7 +1042,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
             elif self.moa_type == "lang_pair":
                 pre_adapter_x = moa_module(pre_adapter_x)
-            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
 
         if not self.normalize_before:

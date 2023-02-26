@@ -19,7 +19,7 @@ SIZE=${1}
 
 DATA_DIR=/brtx/606-nvme1/haoranxu/m15_32k
 DATA_BIN=${DATA_DIR}/data_bin/shard000/
-SAVE_PATH=/brtx/606-nvme1/haoranxu/moa_checkpoints/pretrained_m15_size_shard_${SIZE}
+SAVE_PATH=/brtx/606-nvme1/haoranxu/moa_checkpoints/pretrained_m15_size_shard_valid_${SIZE}
 MAX_UPDATES=100000
 ARCH=transformer
 FREQ=1
@@ -61,59 +61,59 @@ conda activate MOA
 # exit
 
 # Evaluate
-SRCS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
-tgt=eng
-mkdir -p ${SAVE_PATH}/results
-replication_count=$[ 32 / ${EXPERT_NUM} ]
-for src in ${SRCS//,/ }; do
-    echo predict $src to $tgt
-    FSRC=${DATA_DIR}/retrieved_data/test.${tgt}-${src}.${src}
-    FTGT=${DATA_DIR}/retrieved_data/test.${tgt}-${src}.${tgt}
-    FOUT=${SAVE_PATH}/results/predict.${tgt}-${src}.${tgt}
+# SRCS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
+# tgt=eng
+# mkdir -p ${SAVE_PATH}/results
+# replication_count=$[ 32 / ${EXPERT_NUM} ]
+# for src in ${SRCS//,/ }; do
+#     echo predict $src to $tgt
+#     FSRC=${DATA_DIR}/retrieved_data/test.${tgt}-${src}.${src}
+#     FTGT=${DATA_DIR}/retrieved_data/test.${tgt}-${src}.${tgt}
+#     FOUT=${SAVE_PATH}/results/predict.${tgt}-${src}.${tgt}
 
-    fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
-        --langs ${LANGS} \
-        --lang-pairs ${LANG_PAIRS} \
-        --task translation_multi_simple_epoch \
-        --is-moe \
-        --sacrebleu \
-        --encoder-langtok src --decoder-langtok \
-        --bpe "sentencepiece" \
-        --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
-        --source-lang ${src} --target-lang ${tgt} \
-        --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \
-        --batch-size 25  \
-        --model-overrides "{'world_size': 32, 'moe_eval_capacity_token_fraction': 1.0, 'use_moe_pad_mask': False, 'pass_tokens_transformer_layer': False, 'replication_count': ${replication_count}}" \
-        --no-progress-bar |\
-        tail -n 1 >  $FOUT.bleu
-    cat ${FOUT}.bleu
-done
+#     fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
+#         --langs ${LANGS} \
+#         --lang-pairs ${LANG_PAIRS} \
+#         --task translation_multi_simple_epoch \
+#         --is-moe \
+#         --sacrebleu \
+#         --encoder-langtok src --decoder-langtok \
+#         --bpe "sentencepiece" \
+#         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
+#         --source-lang ${src} --target-lang ${tgt} \
+#         --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \
+#         --batch-size 25  \
+#         --model-overrides "{'world_size': 32, 'moe_eval_capacity_token_fraction': 1.0, 'use_moe_pad_mask': False, 'pass_tokens_transformer_layer': False, 'replication_count': ${replication_count}}" \
+#         --no-progress-bar |\
+#         tail -n 1 >  $FOUT.bleu
+#     cat ${FOUT}.bleu
+# done
 
-TGTS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
-src=eng
-for tgt in ${TGTS//,/ }; do
-    echo predict $src to $tgt
-    FSRC=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${src}
-    FTGT=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${tgt}
-    FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
+# TGTS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
+# src=eng
+# for tgt in ${TGTS//,/ }; do
+#     echo predict $src to $tgt
+#     FSRC=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${src}
+#     FTGT=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${tgt}
+#     FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
 
-    fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
-        --langs ${LANGS} \
-        --lang-pairs ${LANG_PAIRS} \
-        --task translation_multi_simple_epoch \
-        --is-moe \
-        --bpe "sentencepiece" \
-        --sacrebleu \
-        --encoder-langtok src --decoder-langtok \
-        --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
-        --source-lang ${src} --target-lang ${tgt} \
-        --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \
-        --batch-size 100 \
-        --model-overrides "{'world_size': 32, 'moe_eval_capacity_token_fraction': 1.0, 'use_moe_pad_mask': False, 'pass_tokens_transformer_layer': False, 'replication_count': ${replication_count}}" \
-        --no-progress-bar |\
-        tail -n 1 >  $FOUT.bleu
-    cat ${FOUT}.bleu
-done
+#     fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
+#         --langs ${LANGS} \
+#         --lang-pairs ${LANG_PAIRS} \
+#         --task translation_multi_simple_epoch \
+#         --is-moe \
+#         --bpe "sentencepiece" \
+#         --sacrebleu \
+#         --encoder-langtok src --decoder-langtok \
+#         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
+#         --source-lang ${src} --target-lang ${tgt} \
+#         --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \
+#         --batch-size 100 \
+#         --model-overrides "{'world_size': 32, 'moe_eval_capacity_token_fraction': 1.0, 'use_moe_pad_mask': False, 'pass_tokens_transformer_layer': False, 'replication_count': ${replication_count}}" \
+#         --no-progress-bar |\
+#         tail -n 1 >  $FOUT.bleu
+#     cat ${FOUT}.bleu
+# done
 
 
 
@@ -124,7 +124,7 @@ for src in ${SRCS//,/ }; do
     FOUT=${SAVE_PATH}/results/predict.${tgt}-${src}.${tgt}
     echo -------------------
     echo ${src}-${tgt}
-    cat $FOUT.bleu | cut -d ' ' -f 7
+    cat $FOUT.bleu | cut -d ' ' -f 3
 done
 
 # Print
@@ -134,7 +134,7 @@ for tgt in ${TGTS//,/ }; do
     FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
     echo -------------------
     echo ${src}-${tgt}
-    cat $FOUT.bleu | cut -d ' ' -f 7
+    cat $FOUT.bleu | cut -d ' ' -f 3
 done
 
 
