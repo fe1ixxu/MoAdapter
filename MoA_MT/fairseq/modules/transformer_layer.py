@@ -496,7 +496,7 @@ class TransformerEncoderLayerBase(nn.Module):
             # TODO: modify l_aux
             pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="encoder")
             pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
-            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
         
         if not self.normalize_before:
@@ -1027,7 +1027,7 @@ class TransformerDecoderLayerBase(nn.Module):
             # TODO: l_aux modification
             pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="decoder")
             pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
-            pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
+            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
             x = x + pre_adapter_x
 
         if not self.normalize_before:
