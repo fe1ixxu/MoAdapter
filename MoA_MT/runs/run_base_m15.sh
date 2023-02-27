@@ -19,7 +19,7 @@ SIZE=${1}
 
 DATA_DIR=/brtx/606-nvme1/haoranxu/m15_32k
 DATA_BIN=${DATA_DIR}/data_bin/shard000/
-SAVE_PATH=/brtx/606-nvme1/haoranxu/moa_checkpoints/pretrained_m15_size_shard_${SIZE}
+SAVE_PATH=/brtx/606-nvme1/haoranxu/moa_checkpoints/pretrained_m15_size_shard_valid_${SIZE}
 MAX_UPDATES=100000
 ARCH=transformer
 FREQ=1
@@ -47,18 +47,18 @@ source ~/.bashrc
 conda activate MOA
 
 ## Train (comment for evaluation)
-#  python train.py ${DATA_BIN} --arch ${ARCH}  --task translation_multi_simple_epoch \
-#  --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 1 --encoder-langtok src --decoder-langtok \
-#  --encoder-layers ${LAYER} --decoder-layers ${LAYER} --encoder-ffn-embed-dim ${FFN_DIM} --decoder-ffn-embed-dim ${FFN_DIM} \
-#  --encoder-embed-dim ${DIM} --decoder-embed-dim ${DIM} --encoder-attention-heads ${HEADS} --decoder-attention-heads ${HEADS} --attention-dropout 0.1 --relu-dropout 0.0 \
-#  --decoder-normalize-before --encoder-normalize-before --share-all-embeddings --max-source-positions 512 --max-target-positions 512 \
-#  --max-update ${MAX_UPDATES} --update-freq ${FREQ}  --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' --lr-scheduler inverse_sqrt \
-#  --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
-#  --label-smoothing 0.1 --best-checkpoint-metric loss --max-tokens ${MAX_TOKENS}  --validate-interval-updates 500 --save-interval-updates 500 --save-interval 2 \
-#  --keep-interval-updates 1  --validate-interval 1000  --seed 42 --log-format simple --log-interval 100 \
-#  --fp16 --optimizer adam --min-params-to-wrap 100000000  \
-#  --save-dir ${SAVE_PATH}  --skip-invalid-size-inputs-valid-test --memory-efficient-fp16  --ddp-backend fully_sharded --wandb-project MOA
-# exit
+ python train.py ${DATA_BIN} --arch ${ARCH}  --task translation_multi_simple_epoch \
+ --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 1 --encoder-langtok src --decoder-langtok \
+ --encoder-layers ${LAYER} --decoder-layers ${LAYER} --encoder-ffn-embed-dim ${FFN_DIM} --decoder-ffn-embed-dim ${FFN_DIM} \
+ --encoder-embed-dim ${DIM} --decoder-embed-dim ${DIM} --encoder-attention-heads ${HEADS} --decoder-attention-heads ${HEADS} --attention-dropout 0.1 --relu-dropout 0.0 \
+ --decoder-normalize-before --encoder-normalize-before --share-all-embeddings --max-source-positions 512 --max-target-positions 512 \
+ --max-update ${MAX_UPDATES} --update-freq ${FREQ}  --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' --lr-scheduler inverse_sqrt \
+ --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
+ --label-smoothing 0.1 --best-checkpoint-metric loss --max-tokens ${MAX_TOKENS}  --validate-interval-updates 500 --save-interval-updates 500 --save-interval 2 \
+ --keep-interval-updates 1  --validate-interval 1000  --seed 42 --log-format simple --log-interval 100 \
+ --fp16 --optimizer adam --min-params-to-wrap 100000000  \
+ --save-dir ${SAVE_PATH}  --skip-invalid-size-inputs-valid-test --memory-efficient-fp16  --ddp-backend fully_sharded --wandb-project MOA
+exit
 
 # Evaluate
 SRCS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
@@ -124,7 +124,7 @@ for src in ${SRCS//,/ }; do
     FOUT=${SAVE_PATH}/results/predict.${tgt}-${src}.${tgt}
     echo -------------------
     echo ${src}-${tgt}
-    cat $FOUT.bleu | cut -d ' ' -f 7
+    cat $FOUT.bleu | cut -d ' ' -f 3
 done
 
 # Print
@@ -134,7 +134,7 @@ for tgt in ${TGTS//,/ }; do
     FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
     echo -------------------
     echo ${src}-${tgt}
-    cat $FOUT.bleu | cut -d ' ' -f 7
+    cat $FOUT.bleu | cut -d ' ' -f 3
 done
 
 
