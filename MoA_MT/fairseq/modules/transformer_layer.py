@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, NaiveMoALayer
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 
@@ -285,6 +285,35 @@ class TransformerEncoderLayerBase(nn.Module):
                 tok_dropout=cfg.moa_eom,
                 moa_local_drop=cfg.moa_local_drop,
             )
+            if cfg.clsa:
+                self.clsa_layer = CLSALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    cfg.cmr_gate_drop,
+                    lang_idx=lang_idx,
+                )
+            else:
+                self.naive_moa = NaiveMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
@@ -437,9 +466,8 @@ class TransformerEncoderLayerBase(nn.Module):
             x = self.final_layer_norm(x)
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
-        if run_moa:
-            pre_adapter_x = x
-        if not run_moe:
+
+        if not run_moe and not run_moa:
             x, fc_result = _ffn(
                 x,
                 self.fc1,
@@ -450,7 +478,8 @@ class TransformerEncoderLayerBase(nn.Module):
                 ffn_ln=self.ffn_layernorm,
             )
             l_aux = None
-        else:
+            x = self.residual_connection(x, residual)
+        elif run_moe:
             fc_result = None
             # x - seq_len, batch_size, model_dim
             x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
@@ -483,22 +512,22 @@ class TransformerEncoderLayerBase(nn.Module):
                     x = (1 - self.moe_fom) * x
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
-        x = self.residual_connection(x, residual)
-        if run_moa:
-            # pre_adapter - seq_len, batch_size, model_dim
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+            x = self.residual_connection(x, residual)
+        elif run_moa:
+            # x - seq_len, batch_size, model_dim
+            x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
                 tokens[:, self.prefix_token_positions]
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            moa_module = self.moa_layer
-            # TODO: modify l_aux
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="encoder")
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
-            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
-            x = x + pre_adapter_x
-        
+            if self.cfg.clsa:
+                moa_module = self.clsa_layer
+            else:
+                moa_module = self.naive_moa
+            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="encoder")
+            x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
+
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
@@ -766,6 +795,35 @@ class TransformerDecoderLayerBase(nn.Module):
                 tok_dropout=cfg.moa_eom,
                 moa_local_drop=cfg.moa_local_drop,
             )
+            if cfg.clsa:
+                self.clsa_layer = CLSALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    cfg.cmr_gate_drop,
+                    lang_idx=lang_idx,
+                )
+            else:
+                self.naive_moa = NaiveMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -967,11 +1025,12 @@ class TransformerDecoderLayerBase(nn.Module):
                 x = self.encoder_attn_layer_norm(x)
 
         residual = x
-        if self.is_moa_layer:
-            pre_adapter_x = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        if not self.is_moe_layer or self.cfg.alternate_decoder_ffn_embed_dim > 0:
+        run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
+        run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
+        
+        if not run_moe and not run_moa:
             x, _ = _ffn(
                 x,
                 fc1=self.fc1,
@@ -982,7 +1041,8 @@ class TransformerDecoderLayerBase(nn.Module):
                 dropout_module=self.dropout_module,
             )
             l_aux = None
-        else:
+            x = self.residual_connection(x, residual, alpha=self.alpha2)
+        elif run_moe:
             # x - seq_len, batch_size, model_dim
             x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
@@ -1014,21 +1074,20 @@ class TransformerDecoderLayerBase(nn.Module):
                     x = (1 - self.moe_fom) * x
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
-        x = self.residual_connection(x, residual, alpha=self.alpha2)
-
-        if self.is_moa_layer:
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # batch_size, seq_len, model_dim
+            x = self.residual_connection(x, residual, alpha=self.alpha2)
+        elif run_moa:
+            x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
                 tokens[:, self.prefix_token_positions]
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            moa_module = self.moa_layer
-            # TODO: l_aux modification
-            pre_adapter_x, l_aux = moa_module(pre_adapter_x, prefix_tokens=prefix_tokens, source="decoder")
-            pre_adapter_x = pre_adapter_x.transpose(0, 1)  # seq_len, batch_size, model_dim
-            # pre_adapter_x = self.residual_connection(pre_adapter_x, residual)
-            x = x + pre_adapter_x
+            if self.cfg.clsa:
+                moa_module = self.clsa_layer
+            else:
+                moa_module = self.naive_moa
+            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="decoder")
+            x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
 
         if not self.normalize_before:
             x = self.final_layer_norm(x)

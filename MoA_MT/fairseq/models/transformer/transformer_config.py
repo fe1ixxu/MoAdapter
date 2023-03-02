@@ -375,6 +375,9 @@ class TransformerConfig(FairseqDataclass):
     moe_cmr: Optional[bool] = field(
         default=False, metadata={"help": "If true enables CMR gating"}
     )
+    clsa: Optional[bool] = field(
+        default=False, metadata={"help": "If true enables CLSA gating"}
+    )
     cmr_log_lang_gates: Optional[bool] = field(
         default=False,
         metadata={

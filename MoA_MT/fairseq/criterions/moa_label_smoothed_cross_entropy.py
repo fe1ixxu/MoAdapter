@@ -58,7 +58,7 @@ class MoALabelSmoothedCrossEntropyCriterionConfig(MoACriterionConfig):
         },
     )
     moa_gate_loss_combine_method: Optional[str] = field(
-        default="average",
+        default="sum",
         metadata={
             "help": "Method of combining the gate loss from each MoA layers ('sum', 'average')"
         },
