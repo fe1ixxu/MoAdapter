@@ -567,9 +567,12 @@ class Trainer(object):
     def remove_model_weights(self, state_dict, keep_key_words):
         module_names = list(state_dict['model'].keys())
         for module_name in module_names:
+            flag = True
             for keep_word in keep_key_words:
-                if keep_word not in module_name:
-                    state_dict['model'].pop(module_name)
+                if keep_word in module_name:
+                    flag = False
+            if flag:
+                state_dict['model'].pop(module_name)
         
     def load_checkpoint(
         self,

@@ -125,9 +125,12 @@ def main(cfg: FairseqConfig) -> None:
     # with requires_grad=True
     if model.cfg.moa_freq > 0:
         for module_name, parameters in model.named_parameters():
+            flag = False
             for keep_module_name in KEEP_KEY_WORDS:
-                if keep_module_name not in module_name:
-                    parameters.requires_grad = False
+                if keep_module_name in module_name:
+                    flag = True
+            if not flag:
+                parameters.requires_grad = False
 
     if cfg.distributed_training.ddp_backend == "fully_sharded":
         # if cfg.distributed_training.use_sharded_state: assert cfg.checkpoint.no_save_optimizer_state, f'--use-sharded-state requires --no-save-optimizer-state'
