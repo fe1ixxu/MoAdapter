@@ -63,6 +63,7 @@ class TransformerEncoderBase(FairseqEncoder):
         self.max_source_positions = cfg.max_source_positions
 
         self.embed_tokens = embed_tokens
+        self.vocab_size = len(dictionary)
 
         self.embed_scale = 1.0 if cfg.no_scale_embedding else math.sqrt(embed_dim)
 
@@ -217,6 +218,7 @@ class TransformerEncoderBase(FairseqEncoder):
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
+        lang_ids = self.vocab_size - src_tokens[:,-1] - 1
 
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
@@ -257,6 +259,7 @@ class TransformerEncoderBase(FairseqEncoder):
                 x,
                 encoder_padding_mask=encoder_padding_mask if has_pads else None,
                 tokens=passed_src_tokens,
+                lang_ids=lang_ids,
             )
             if isinstance(lr, tuple) and len(lr) == 2:
                 x, fc_result = lr

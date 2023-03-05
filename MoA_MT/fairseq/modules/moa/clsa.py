@@ -114,7 +114,7 @@ class NaiveMoALayer(torch.nn.Module):
         assert len(input) == 1, "only single input Tensor supported"
         residual = residual.transpose(0,1)
         x_ffn = self.ffn_fn(*input)
-        x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"])
+        x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
         x_out = x_ffn + x_moa + residual
 
         return x_out, l_aux

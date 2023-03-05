@@ -78,6 +78,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         embed_dim = cfg.decoder.embed_dim
         self.embed_dim = embed_dim
         self.output_embed_dim = cfg.decoder.output_dim
+        self.vocab_size = len(dictionary)
 
         self.padding_idx = embed_tokens.padding_idx
         self.max_target_positions = cfg.max_target_positions
@@ -423,7 +424,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         """
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
-
+        lang_ids = self.vocab_size - prev_output_tokens[:,0] - 1 
         # compute self-attention padding mask (involves device-to-host transfer,
         # so put it at the top of the forward)
         if self_attn_padding_mask is None and (
@@ -475,6 +476,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
                 tokens=prev_output_tokens,
+                lang_ids=lang_ids,
             )
             for key in loss_keys:
                 results[key].append((l_aux_i or {}).get(key, None))

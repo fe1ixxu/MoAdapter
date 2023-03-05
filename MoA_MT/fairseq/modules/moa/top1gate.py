@@ -163,6 +163,7 @@ class MOATop1Gate(torch.nn.Module):
         use_tutel=False,
         init_model_on_gpu=False,
         method="token",
+        num_langs=0,
     ) -> None:
         # TODO: merge this to top2gate.py
         #
@@ -176,6 +177,7 @@ class MOATop1Gate(torch.nn.Module):
         self.moa_eval_capacity_token_fraction = moa_eval_capacity_token_fraction
         self.use_tutel = use_tutel
         self.method=method
+        self.num_langs=num_langs
 
     def forward(
         self,
@@ -185,6 +187,7 @@ class MOATop1Gate(torch.nn.Module):
         prefix_tokens: Optional[torch.Tensor] = None,
         lang_features: Optional[torch.Tensor] = None,
         input_shape: Optional[List] = None,
+        lang_ids: Optional[List] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Dict]:  # type: ignore
         if self.method == "lang":
             reshape_input_size = input.shape
@@ -201,7 +204,22 @@ class MOATop1Gate(torch.nn.Module):
             )
             input[:lang_features.shape[0], :] = lang_features
 
-        logits = self.wg(input)
+        if self.method == "lang-wise":
+            logits = one_hot(lang_ids.unsqueeze(-1), self.num_langs)
+            logits = torch.where(logits==0, -torch.inf, logits)
+            logits = logits.unsqueeze(1).expand(input_shape[0], input_shape[1], logits.shape[-1])
+            logits = logits.reshape(-1, logits.shape[-1])
+            new_logits = torch.zeros(
+                input.shape[0], logits.shape[-1],
+                dtype=input.dtype,
+                layout=logits.layout,
+                device=logits.device,
+            )
+            new_logits[:logits.shape[0], :] = logits
+            logits = new_logits
+        else:
+            logits = self.wg(input)
+
         return top1gating(
             logits,
             mask,

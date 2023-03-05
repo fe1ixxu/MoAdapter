@@ -250,7 +250,6 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
-
         if build_moa:
             lang_idx = None
             if cfg.moa_top1_expert:
@@ -261,6 +260,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
                     use_tutel=cfg.use_tutel_moa,
                     method=cfg.moa_gate_method,
+                    num_langs=len(cfg.langs),
                 )
             else:
                 gate = MOATop2Gate(
@@ -275,6 +275,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     init_model_on_gpu=cfg.init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
                     method=cfg.moa_gate_method,
+                    num_langs=len(cfg.langs),
                 )
             adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
@@ -417,6 +418,7 @@ class TransformerEncoderLayerBase(nn.Module):
         encoder_padding_mask: Optional[Tensor],
         attn_mask: Optional[Tensor] = None,
         tokens: Optional[Tensor] = None,
+        lang_ids:  Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
         """
         Args:
@@ -525,7 +527,7 @@ class TransformerEncoderLayerBase(nn.Module):
                 moa_module = self.clsa_layer
             else:
                 moa_module = self.naive_moa
-            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="encoder")
+            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="encoder", lang_ids=lang_ids)
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
 
         if not self.normalize_before:
@@ -771,6 +773,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     use_tutel=cfg.use_tutel_moa,
                     init_model_on_gpu=init_model_on_gpu,
                     method=cfg.moa_gate_method,
+                    num_langs=len(cfg.langs),
                 )
             else:
                 gate = MOATop2Gate(
@@ -785,6 +788,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     init_model_on_gpu=init_model_on_gpu,
                     analyse_moa_gating=cfg.analyse_moa_gating,
                     method=cfg.moa_gate_method,
+                    num_langs=len(cfg.langs),
                 )
             adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
             self.moa_layer = MOALayer(
@@ -915,6 +919,7 @@ class TransformerDecoderLayerBase(nn.Module):
         need_attn: bool = False,
         need_head_weights: bool = False,
         tokens: Optional[Tensor] = None,
+        lang_ids: Optional[Tensor] = None,
     ) -> Tuple[
         Tensor, Tensor, Optional[List[Optional[Tensor]]], Optional[Dict[str, Tensor]]
     ]:
@@ -1086,7 +1091,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 moa_module = self.clsa_layer
             else:
                 moa_module = self.naive_moa
-            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="decoder")
+            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="decoder", lang_ids=lang_ids)
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
 
         if not self.normalize_before:
