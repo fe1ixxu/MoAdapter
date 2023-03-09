@@ -153,6 +153,8 @@ class TransformerEncoderBase(FairseqEncoder):
         src_lengths: Optional[torch.Tensor] = None,
         return_all_hiddens: bool = False,
         token_embeddings: Optional[torch.Tensor] = None,
+        src_lang_id: Optional[torch.Tensor] = None,
+        tgt_lang_id: Optional[torch.Tensor] = None,
     ):
         """
         Args:
@@ -178,7 +180,12 @@ class TransformerEncoderBase(FairseqEncoder):
                   Only populated if *return_all_hiddens* is True.
         """
         return self.forward_scriptable(
-            src_tokens, src_lengths, return_all_hiddens, token_embeddings
+            src_tokens, 
+            src_lengths, 
+            return_all_hiddens, 
+            token_embeddings,
+            src_lang_id,
+            tgt_lang_id,
         )
 
     # TorchScript doesn't support super() method so that the scriptable Subclass
@@ -191,6 +198,8 @@ class TransformerEncoderBase(FairseqEncoder):
         src_lengths: Optional[torch.Tensor] = None,
         return_all_hiddens: bool = False,
         token_embeddings: Optional[torch.Tensor] = None,
+        src_lang_id: Optional[torch.Tensor] = None,
+        tgt_lang_id: Optional[torch.Tensor] = None,
     ):
         """
         Args:

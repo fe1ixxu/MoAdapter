@@ -341,6 +341,8 @@ class SequenceGenerator(nn.Module):
                     encoder_outs,
                     incremental_states,
                     self.temperature,
+                    net_input.get("src_lang_id", None),
+                    net_input.get("tgt_lang_id", None)
                 )
 
             if self.lm_model is not None:
@@ -781,6 +783,8 @@ class EnsembleModel(nn.Module):
         encoder_outs: List[Dict[str, List[Tensor]]],
         incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
         temperature: float = 1.0,
+        src_lang_id: Optional[int] = None,
+        tgt_lang_id: Optional[int] = None,
     ):
         log_probs = []
         avg_attn: Optional[Tensor] = None
@@ -794,12 +798,23 @@ class EnsembleModel(nn.Module):
                     tokens,
                     encoder_out=encoder_out,
                     incremental_state=incremental_states[i],
+                    src_lang_id=src_lang_id,
+                    tgt_lang_id=tgt_lang_id,
                 )
             else:
                 if hasattr(model, "decoder"):
-                    decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out)
+                    decoder_out = model.decoder.forward(
+                        tokens, 
+                        encoder_out=encoder_out,
+                        src_lang_id=src_lang_id,
+                        tgt_lang_id=tgt_lang_id
+                        )
                 else:
-                    decoder_out = model.forward(tokens)
+                    decoder_out = model.forward(
+                        tokens,
+                        src_lang_id=src_lang_id,
+                        tgt_lang_id=tgt_lang_id
+                        )
 
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)

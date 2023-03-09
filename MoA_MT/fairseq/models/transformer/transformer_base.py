@@ -174,6 +174,8 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
+        src_lang_id: Optional[int] = None,
+        tgt_lang_id: Optional[int] = None,
     ):
         """
         Run the forward pass for an encoder-decoder model.
@@ -182,7 +184,11 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
         which are not supported by TorchScript.
         """
         encoder_out = self.encoder(
-            src_tokens, src_lengths=src_lengths, return_all_hiddens=return_all_hiddens
+            src_tokens, 
+            src_lengths=src_lengths, 
+            return_all_hiddens=return_all_hiddens,
+            src_lang_id=src_lang_id,
+            tgt_lang_id=tgt_lang_id,
         )
         decoder_out = self.decoder(
             prev_output_tokens,
@@ -192,6 +198,8 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
+            src_lang_id=src_lang_id,
+            tgt_lang_id=tgt_lang_id,
         )
         return decoder_out
 
