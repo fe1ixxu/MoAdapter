@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from fairseq.modules import LayerNorm
 
 
 class CLSAGate(torch.nn.Module):
@@ -93,29 +94,61 @@ class CLSALayer(torch.nn.Module):
             ).detach()
         return x_out, l_aux
 
+# parallel:
+# class NaiveMoALayer(torch.nn.Module):
+#     def __init__(
+#         self,
+#         moa_layer: torch.nn.Module,
+#         ffn_fn: Callable,
+#     ) -> None:
+#         super().__init__()
+#         self.moa_layer = moa_layer
+#         self.ffn_fn = ffn_fn
 
+#     def forward(
+#         self,
+#         *input: torch.Tensor,
+#         residual: torch.Tensor,
+#         prefix_tokens=None,
+#         **kwargs: Any
+#     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+#         assert len(input) == 1, "only single input Tensor supported"
+#         residual = residual.transpose(0,1)
+#         x_ffn = self.ffn_fn(*input)
+#         x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
+#         x_out = x_ffn + x_moa + residual
+
+#         return x_out, l_aux
+
+## seq
 class NaiveMoALayer(torch.nn.Module):
     def __init__(
         self,
         moa_layer: torch.nn.Module,
         ffn_fn: Callable,
+        model_dim: int,
     ) -> None:
         super().__init__()
         self.moa_layer = moa_layer
         self.ffn_fn = ffn_fn
+        self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
 
     def forward(
         self,
-        *input: torch.Tensor,
+        *x: torch.Tensor,
         residual: torch.Tensor,
         prefix_tokens=None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        assert len(input) == 1, "only single input Tensor supported"
+        assert len(x) == 1, "only single input Tensor supported"
         residual = residual.transpose(0,1)
-        x_ffn = self.ffn_fn(*input)
-        x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
-        x_out = x_ffn + x_moa + residual
+        x = self.ffn_fn(*x)
+        x = x + residual
+        shortcut = x
+        
+        x = self.layer_norm(x)
+        x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
+        x = x + shortcut
 
-        return x_out, l_aux
+        return x, l_aux
 

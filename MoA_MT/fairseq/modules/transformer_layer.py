@@ -314,6 +314,7 @@ class TransformerEncoderLayerBase(nn.Module):
                         self.dropout_module,
                         ffn_ln=self.ffn_layernorm,
                     )[0],
+                    self.embed_dim,
                 )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
@@ -827,6 +828,7 @@ class TransformerDecoderLayerBase(nn.Module):
                         self.dropout_module,
                         ffn_ln=self.ffn_layernorm,
                     )[0],
+                    self.embed_dim,
                 )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)

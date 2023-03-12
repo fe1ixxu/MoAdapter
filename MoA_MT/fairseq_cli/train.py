@@ -124,13 +124,17 @@ def main(cfg: FairseqConfig) -> None:
     # have the same status of requires_grad. I modify fairscale library that only accepts parameters
     # with requires_grad=True
     if model.cfg.moa_freq > 0:
+        activated_module_names = [] 
         for module_name, parameters in model.named_parameters():
             flag = False
             for keep_module_name in KEEP_KEY_WORDS:
                 if keep_module_name in module_name:
                     flag = True
+                    activated_module_names.append(module_name)
             if not flag:
                 parameters.requires_grad = False
+        for module_name in activated_module_names:
+            logger.info("Module {} is activated".format(module_name))
 
     if cfg.distributed_training.ddp_backend == "fully_sharded":
         # if cfg.distributed_training.use_sharded_state: assert cfg.checkpoint.no_save_optimizer_state, f'--use-sharded-state requires --no-save-optimizer-state'

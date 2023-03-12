@@ -572,6 +572,7 @@ class Trainer(object):
                 if keep_word in module_name:
                     flag = False
             if flag:
+                logger.info("Remove module {} from storage".format(module_name))
                 state_dict['model'].pop(module_name)
         
     def load_checkpoint(
