@@ -48,12 +48,12 @@ conda activate MOA
 
 ## Train (comment for evaluation)
  python train.py ${DATA_BIN} --arch ${ARCH}  --task translation_multi_simple_epoch \
- --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 3 --encoder-langtok src --decoder-langtok \
+ --lang-pairs ${LANG_PAIRS} --langs ${LANGS} --sampling-method temperature --sampling-temperature 3 --encoder-langtok tgt \
  --encoder-layers ${LAYER} --decoder-layers ${LAYER} --encoder-ffn-embed-dim ${FFN_DIM} --decoder-ffn-embed-dim ${FFN_DIM} \
  --encoder-embed-dim ${DIM} --decoder-embed-dim ${DIM} --encoder-attention-heads ${HEADS} --decoder-attention-heads ${HEADS} --attention-dropout 0.1 --relu-dropout 0.0 \
  --decoder-normalize-before --encoder-normalize-before --share-all-embeddings --max-source-positions 512 --max-target-positions 512 \
  --max-update ${MAX_UPDATES} --update-freq ${FREQ}  --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' --lr-scheduler inverse_sqrt \
- --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
+ --warmup-init-lr 1e-07 --warmup-updates 8000 --lr 0.0004 --stop-min-lr 1e-09 --clip-norm 0.0 --dropout 0.1 --weight-decay 0.0 --criterion label_smoothed_cross_entropy \
  --label-smoothing 0.1 --best-checkpoint-metric loss --max-tokens ${MAX_TOKENS}  --validate-interval-updates 500 --save-interval-updates 500 --save-interval 2 \
  --keep-interval-updates 1  --validate-interval 1000  --seed 42 --log-format simple --log-interval 100 \
  --fp16 --optimizer adam --min-params-to-wrap 100000000  \
@@ -61,7 +61,7 @@ conda activate MOA
 exit
 
 # Evaluate
-SRCS='nso'
+SRCS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
 tgt=eng
 mkdir -p ${SAVE_PATH}/results
 for src in ${SRCS//,/ }; do
@@ -75,7 +75,7 @@ for src in ${SRCS//,/ }; do
         --lang-pairs ${LANG_PAIRS} \
         --task translation_multi_simple_epoch \
         --sacrebleu \
-        --encoder-langtok src --decoder-langtok \
+        --encoder-langtok tgt \
         --bpe "sentencepiece" \
         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
         --source-lang ${src} --target-lang ${tgt} \
@@ -86,31 +86,29 @@ for src in ${SRCS//,/ }; do
     cat ${FOUT}.bleu
 done
 
-# TGTS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
-# src=eng
-# for tgt in ${TGTS//,/ }; do
-#     echo predict $src to $tgt
-#     FSRC=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${src}
-#     FTGT=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${tgt}
-#     FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
+TGTS='nso,run,ssw,ind,msa,isl,nob,fao,slv,tgl,cat,glg,fur,ltz,lim'
+src=eng
+for tgt in ${TGTS//,/ }; do
+    echo predict $src to $tgt
+    FSRC=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${src}
+    FTGT=${DATA_DIR}/retrieved_data/test.${src}-${tgt}.${tgt}
+    FOUT=${SAVE_PATH}/results/predict.${src}-${tgt}.${tgt}
 
-#     fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
-#         --langs ${LANGS} \
-#         --lang-pairs ${LANG_PAIRS} \
-#         --task translation_multi_simple_epoch \
-#         --is-moe \
-#         --bpe "sentencepiece" \
-#         --sacrebleu \
-#         --encoder-langtok src --decoder-langtok \
-#         --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
-#         --source-lang ${src} --target-lang ${tgt} \
-#         --distributed-world-size 32 --distributed-port ${RANDOM_PORT} \
-#         --batch-size 100 \
-#         --model-overrides "{'world_size': 32, 'moe_eval_capacity_token_fraction': 1.0, 'use_moe_pad_mask': False, 'pass_tokens_transformer_layer': False, 'replication_count': ${replication_count}}" \
-#         --no-progress-bar |\
-#         tail -n 1 >  $FOUT.bleu
-#     cat ${FOUT}.bleu
-# done
+    fairseq-generate ${DATA_BIN} --path $SAVE_PATH/checkpoint_best.pt \
+        --langs ${LANGS} \
+        --lang-pairs ${LANG_PAIRS} \
+        --task translation_multi_simple_epoch \
+        --bpe "sentencepiece" \
+        --sacrebleu \
+        --encoder-langtok tgt \
+        --sentencepiece-model ${DATA_DIR}/vocab_bin/sentencepiece.source.32000.model \
+        --source-lang ${src} --target-lang ${tgt} \
+        --batch-size 100 \
+        --no-progress-bar |\
+        sort -t '-' -nk 2 | grep -P "^D-" | cut -f 3- > $FOUT
+        SACREBLEU_FORMAT=text sacrebleu -tok flores200 $FOUT < ${FTGT} > $FOUT.bleu
+    cat ${FOUT}.bleu
+done
 
 
 
