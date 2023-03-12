@@ -320,6 +320,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         return_all_hiddens: bool = False,
         token_embeddings: Optional[torch.Tensor] = None,
         self_attn_padding_mask: Optional[Tensor] = None,
+        src_lang_id: Optional[torch.Tensor] = None,
+        tgt_lang_id: Optional[torch.Tensor] = None,
     ):
         """
         Includes several features from "Jointly Learning to Align and
@@ -359,6 +361,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             alignment_heads=alignment_heads,
             token_embeddings=token_embeddings,
             self_attn_padding_mask=self_attn_padding_mask,
+            src_lang_id=src_lang_id,
+            tgt_lang_id=tgt_lang_id,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -374,6 +378,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         alignment_heads: Optional[int] = None,
         token_embeddings: Optional[torch.Tensor] = None,
         self_attn_padding_mask: Optional[Tensor] = None,
+        src_lang_id: Optional[torch.Tensor] = None,
+        tgt_lang_id: Optional[torch.Tensor] = None,
     ):
         return self.extract_features_scriptable(
             prev_output_tokens,
@@ -384,6 +390,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             alignment_heads,
             token_embeddings=token_embeddings,
             self_attn_padding_mask=self_attn_padding_mask,
+            src_lang_id=src_lang_id,
+            tgt_lang_id=tgt_lang_id,
         )
 
     """
@@ -402,6 +410,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         alignment_heads: Optional[int] = None,
         token_embeddings: Optional[Tensor] = None,
         self_attn_padding_mask: Optional[Tensor] = None,
+        src_lang_id: Optional[torch.Tensor] = None,
+        tgt_lang_id: Optional[torch.Tensor] = None,
     ):
         """
         Similar to *forward* but only return features.
