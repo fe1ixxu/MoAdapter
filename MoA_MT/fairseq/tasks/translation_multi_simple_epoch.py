@@ -29,6 +29,7 @@ from fairseq.data.multilingual.multilingual_utils import LangTokStyle, get_lang_
 from fairseq.data.multilingual.sampling_method import SamplingMethod
 from fairseq.tasks import LegacyFairseqTask, register_task
 from fairseq.utils import FileContentsAction
+from fairseq.optim.amp_optimizer import AMPOptimizer
 
 
 ###
@@ -45,6 +46,30 @@ MINED_DATA_TAG = torch.tensor([45, 50, 248120, 49, 248123]).int().cpu()
 
 logger = logging.getLogger(__name__)
 
+def X_loss(logits, pad_mask):
+    pad_mask = pad_mask.view(-1)
+    non_pad_mask = ~pad_mask
+    dict_size = logits[0].size(-1)
+
+    m = sum(logits) / len(logits)
+    m = m.float().view(-1, dict_size)[non_pad_mask]
+
+    kl_all = 0
+    for l in logits:
+        l = l.float().view(-1, dict_size)[non_pad_mask]
+        d = (l-m) * (torch.log(l) - torch.log(m))
+        kl_all += d.sum()
+    return kl_all / len(logits)
+
+def symmetric_KL_loss(p, q, pad_mask):
+    """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
+    p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
+    dict_size = q.size(-1)
+    non_pad_mask = ~pad_mask
+    p = p.view(-1, dict_size)[non_pad_mask]
+    q = q.view(-1, dict_size)[non_pad_mask]
+    loss = (p - q) * (torch.log(p) - torch.log(q))
+    return 0.5 * loss.sum()
 
 @register_task("translation_multi_simple_epoch")
 class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
@@ -102,6 +127,8 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                             "use 'space' to disable detokenization; see fairseq.data.encoders for other options")
         parser.add_argument('--eval-bleu-print-samples', action='store_true',
                             help="print sample generations during validation")
+        parser.add_argument('--ad-weight', type=int, default=1.0,
+                            help="weight for the ad loss")
 
         SamplingMethod.add_arguments(parser)
         MultilingualDatasetManager.add_args(parser)
@@ -143,6 +170,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         self.eval_tokenized_bleu = args.eval_tokenized_bleu
         self.eval_bleu_detok = args.eval_bleu_detok
         self.eval_bleu_print_samples = args.eval_bleu_print_samples
+        self.ad_weight = args.ad_weight
 
     def get_lang_idx(self):
         lang_idx = torch.zeros(len(self.langs) + 1, dtype=torch.int32)
@@ -290,6 +318,135 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                 Namespace(**vars(args), **generation_args),
             )
         return model
+
+    def train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ):
+        """
+        Do forward and backward, and return the loss as computed by *criterion*
+        for the given *model* and *sample*.
+
+        Args:
+            sample (dict): the mini-batch. The format is defined by the
+                :class:`~fairseq.data.FairseqDataset`.
+            model (~fairseq.models.BaseFairseqModel): the model
+            criterion (~fairseq.criterions.FairseqCriterion): the criterion
+            optimizer (~fairseq.optim.FairseqOptimizer): the optimizer
+            update_num (int): the current update
+            ignore_grad (bool): multiply loss by 0 if this is set to True
+
+        Returns:
+            tuple:
+                - the loss
+                - the sample size, which is used as the denominator for the
+                  gradient
+                - logging outputs to display while training
+        """
+        model.train()
+        model.set_num_updates(update_num)
+
+        if model.cfg.moa_type == "ad":
+            loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
+        else:
+            loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
+        return loss, sample_size, logging_output
+
+    def ad_train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ): 
+        losses, logits, logging_outputs = [], [], []
+        
+        for adapter_side in ["moa", "lang_specific"]:
+            with torch.autograd.profiler.record_function("forward"):
+                with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                    loss, logit, sample_size, logging_output = self._get_loss(sample, model, criterion, adapter_side)
+                    losses.append(loss)
+                    logits.append(logit)
+                    logging_outputs.append(logging_output)
+
+        pad_mask = sample["target"].eq(criterion.padding_idx)
+        # ad_loss = X_loss(logits, pad_mask)
+        ad_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
+        loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
+
+        logging_output = {}
+        for k in logging_outputs[0].keys():
+            if k not in ["moa_loss", "cmr_loss"]:
+                logging_output[k] = (logging_outputs[0][k] + logging_outputs[1][k]) / 2
+            else:
+                logging_output[k] = logging_outputs[0][k]
+ 
+        logging_output["ad_loss"] = ad_loss
+
+        if ignore_grad:
+            loss *= 0
+        with torch.autograd.profiler.record_function("backward"):
+            optimizer.backward(loss)
+
+        def freeze_params(layer):
+            for param in layer.parameters():
+                param.grad = None
+
+        if getattr(self.cfg, "freeze_up_to_layer", None):
+            for module in model.modules():
+                if not isinstance(module, torch.nn.ModuleList):
+                    continue
+                for layer in module[: getattr(self.cfg, "freeze_up_to_layer", None)]:
+                    freeze_params(layer)
+
+        return loss, sample_size, logging_output
+
+    def _get_loss(self, sample, model, criterion, adapter_side, reduce=True):
+        assert hasattr(
+            criterion, "compute_loss"
+        ), "MoA with ad task requires the criterion to implement the compute_loss() method"
+        
+        net_output = model(**sample["net_input"], adapter_side=adapter_side)
+        sample_size = (
+            sample["target"].size(0) if criterion.sentence_avg else sample["ntokens"]
+        )
+        loss, nll_loss, moa_loss, cmr_loss, moa_metadata = criterion.compute_loss(
+            model, net_output, sample, sample_size, reduce=reduce
+        )
+        logits = net_output[0].float()
+        logits = F.softmax(logits, dim=-1)
+
+        logging_output = {
+            "loss": loss.data,
+            "nll_loss": nll_loss.data,
+            "moa_loss": moa_loss.data,
+            "cmr_loss": cmr_loss.data,
+            "ntokens": sample["ntokens"],
+            "nsentences": sample["target"].size(0),
+            "sample_size": sample_size,
+        }
+        logging_output.update(moa_metadata)
+
+        return loss, logits, sample_size, logging_output
+
+    def normal_train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ):
+        with torch.autograd.profiler.record_function("forward"):
+            with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                loss, sample_size, logging_output = criterion(model, sample)
+        if ignore_grad:
+            loss *= 0
+        with torch.autograd.profiler.record_function("backward"):
+            optimizer.backward(loss)
+
+        def freeze_params(layer):
+            for param in layer.parameters():
+                param.grad = None
+
+        if getattr(self.cfg, "freeze_up_to_layer", None):
+            for module in model.modules():
+                if not isinstance(module, torch.nn.ModuleList):
+                    continue
+                for layer in module[: getattr(self.cfg, "freeze_up_to_layer", None)]:
+                    freeze_params(layer)
+
+        return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)

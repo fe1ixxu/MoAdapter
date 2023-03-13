@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from fairseq.modules import LayerNorm
+from fairseq.utils import get_activation_fn
 
 
 class CLSAGate(torch.nn.Module):
@@ -95,33 +96,33 @@ class CLSALayer(torch.nn.Module):
         return x_out, l_aux
 
 # parallel:
-# class NaiveMoALayer(torch.nn.Module):
-#     def __init__(
-#         self,
-#         moa_layer: torch.nn.Module,
-#         ffn_fn: Callable,
-#     ) -> None:
-#         super().__init__()
-#         self.moa_layer = moa_layer
-#         self.ffn_fn = ffn_fn
+class ParallelMoALayer(torch.nn.Module):
+    def __init__(
+        self,
+        moa_layer: torch.nn.Module,
+        ffn_fn: Callable,
+    ) -> None:
+        super().__init__()
+        self.moa_layer = moa_layer
+        self.ffn_fn = ffn_fn
 
-#     def forward(
-#         self,
-#         *input: torch.Tensor,
-#         residual: torch.Tensor,
-#         prefix_tokens=None,
-#         **kwargs: Any
-#     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-#         assert len(input) == 1, "only single input Tensor supported"
-#         residual = residual.transpose(0,1)
-#         x_ffn = self.ffn_fn(*input)
-#         x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
-#         x_out = x_ffn + x_moa + residual
+    def forward(
+        self,
+        *input: torch.Tensor,
+        residual: torch.Tensor,
+        prefix_tokens=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(input) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x_ffn = self.ffn_fn(*input)
+        x_moa, l_aux = self.moa_layer(*input, prefix_tokens=prefix_tokens, source=kwargs["source"])
+        x_out = x_ffn + x_moa + residual
 
-#         return x_out, l_aux
+        return x_out, l_aux
 
 ## seq
-class NaiveMoALayer(torch.nn.Module):
+class SeqMoALayer(torch.nn.Module):
     def __init__(
         self,
         moa_layer: torch.nn.Module,
@@ -147,8 +148,84 @@ class NaiveMoALayer(torch.nn.Module):
         shortcut = x
         
         x = self.layer_norm(x)
-        x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"], lang_ids=kwargs["lang_ids"])
+        x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
         x = x + shortcut
 
         return x, l_aux
 
+def Linear(in_features, out_features, bias=True):
+    m = torch.nn.Linear(in_features, out_features, bias)
+    torch.nn.init.xavier_uniform_(m.weight)
+    if bias:
+        torch.nn.init.constant_(m.bias, 0.0)
+    return m
+
+class NaiveAdapter(torch.nn.Module):
+    def __init__(
+        self,
+        input_size: int,
+        bottleneck_size: int,
+    ):
+        super().__init__()
+
+        # reuse the transformer Linear layer to have consistent init with the rest of the model
+        self.down = Linear(input_size, bottleneck_size)
+        self.up = Linear(bottleneck_size, input_size)
+        self.layer_norm = LayerNorm(input_size, elementwise_affine=True)
+        self.activation_fn = get_activation_fn("relu")
+
+    def forward(self, x: torch.Tensor):
+        shortcut = x
+
+        x = self.layer_norm(x)
+        x = self.down(x)
+        x = self.activation_fn(x)
+        x = self.up(x)
+
+        return x + shortcut
+
+class ADMoALayer(torch.nn.Module):
+    def __init__(
+        self,
+        moa_layer: torch.nn.Module,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+        num_langs: int,
+    ) -> None:
+        super().__init__()
+        self.moa_layer = moa_layer
+        self.ffn_fn = ffn_fn
+        self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
+        self.lang_adapters=torch.nn.ModuleList([])
+        for i in range(num_langs):
+            self.lang_adapters.append(
+                NaiveAdapter(
+                    model_dim,
+                    bottleneck_size,
+                )
+            )
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        prefix_tokens=None,
+        lang_id=None,
+        side=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+        shortcut = x
+        
+        if side == "moa" or (not self.training):
+            x = self.layer_norm(x)
+            x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
+            x = x + shortcut
+        else:
+            x = self.lang_adapters[lang_id](x)
+            l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
+
+        return x, l_aux

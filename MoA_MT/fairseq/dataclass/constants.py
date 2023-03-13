@@ -54,4 +54,4 @@ GENERATION_DECODING_FORMAT_CHOICES = ChoiceEnum(
 ZERO_SHARDING_CHOICES = ChoiceEnum(["none", "os"])
 PIPELINE_CHECKPOINT_CHOICES = ChoiceEnum(["always", "never", "except_last"])
 PRINT_ALIGNMENT_CHOICES = ChoiceEnum(["hard", "soft"])
-KEEP_KEY_WORDS = ["moa_layer", "clsa_layer", "naive_moa"]
+KEEP_KEY_WORDS = ["moa_layer", "moa_wrapper"]

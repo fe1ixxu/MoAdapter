@@ -155,6 +155,7 @@ class TransformerEncoderBase(FairseqEncoder):
         token_embeddings: Optional[torch.Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ):
         """
         Args:
@@ -186,6 +187,7 @@ class TransformerEncoderBase(FairseqEncoder):
             token_embeddings,
             src_lang_id,
             tgt_lang_id,
+            adapter_side,
         )
 
     # TorchScript doesn't support super() method so that the scriptable Subclass
@@ -200,6 +202,7 @@ class TransformerEncoderBase(FairseqEncoder):
         token_embeddings: Optional[torch.Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
+        adapter_side: Optional[str] = None,
     ):
         """
         Args:
@@ -227,7 +230,9 @@ class TransformerEncoderBase(FairseqEncoder):
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
-        lang_ids = self.vocab_size - src_tokens[:,-1] - 1
+        if src_lang_id is not None:
+            src_lang_id = int(src_lang_id[0] - 1)
+            tgt_lang_id = int(tgt_lang_id[0] - 1)
 
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
@@ -268,7 +273,9 @@ class TransformerEncoderBase(FairseqEncoder):
                 x,
                 encoder_padding_mask=encoder_padding_mask if has_pads else None,
                 tokens=passed_src_tokens,
-                lang_ids=lang_ids,
+                src_lang_id=src_lang_id,
+                tgt_lang_id=tgt_lang_id,
+                adapter_side=adapter_side,
             )
             if isinstance(lr, tuple) and len(lr) == 2:
                 x, fc_result = lr

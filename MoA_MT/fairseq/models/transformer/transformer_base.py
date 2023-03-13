@@ -176,6 +176,7 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
         alignment_heads: Optional[int] = None,
         src_lang_id: Optional[int] = None,
         tgt_lang_id: Optional[int] = None,
+        adapter_side: Optional[str] = "moa",
     ):
         """
         Run the forward pass for an encoder-decoder model.
@@ -189,6 +190,7 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
             return_all_hiddens=return_all_hiddens,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
+            adapter_side=adapter_side,
         )
         decoder_out = self.decoder(
             prev_output_tokens,
@@ -200,6 +202,7 @@ class TransformerModelBase(FairseqEncoderDecoderModel):
             return_all_hiddens=return_all_hiddens,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
+            adapter_side=adapter_side,
         )
         return decoder_out
 

@@ -322,6 +322,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ):
         """
         Includes several features from "Jointly Learning to Align and
@@ -363,6 +364,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             self_attn_padding_mask=self_attn_padding_mask,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
+            adapter_side=adapter_side,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -380,6 +382,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ):
         return self.extract_features_scriptable(
             prev_output_tokens,
@@ -392,6 +395,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             self_attn_padding_mask=self_attn_padding_mask,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
+            adapter_side=adapter_side,
         )
 
     """
@@ -412,6 +416,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ):
         """
         Similar to *forward* but only return features.
@@ -434,7 +439,9 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         """
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
-        lang_ids = self.vocab_size - prev_output_tokens[:,0] - 1 
+        if src_lang_id is not None:
+            src_lang_id = int(src_lang_id[0] - 1)
+            tgt_lang_id = int(tgt_lang_id[0] - 1)
         # compute self-attention padding mask (involves device-to-host transfer,
         # so put it at the top of the forward)
         if self_attn_padding_mask is None and (
@@ -486,7 +493,9 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
                 tokens=prev_output_tokens,
-                lang_ids=lang_ids,
+                src_lang_id=src_lang_id,
+                tgt_lang_id=tgt_lang_id,
+                adapter_side=adapter_side,
             )
             for key in loss_keys:
                 results[key].append((l_aux_i or {}).get(key, None))

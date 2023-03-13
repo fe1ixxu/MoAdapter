@@ -375,8 +375,11 @@ class TransformerConfig(FairseqDataclass):
     moe_cmr: Optional[bool] = field(
         default=False, metadata={"help": "If true enables CMR gating"}
     )
-    clsa: Optional[bool] = field(
-        default=False, metadata={"help": "If true enables CLSA gating"}
+    moa_type: Optional[str] = field(
+        default="", metadata={"help": "Choose MoA type: clsa/para/seq/ad"}
+    )
+    lang_adapter_bottle_neck: Optional[int] = field(
+        default=128, metadata={"help": "language-specific adapter bottleneck when ad is enabled"}
     )
     cmr_log_lang_gates: Optional[bool] = field(
         default=False,

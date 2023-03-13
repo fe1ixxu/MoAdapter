@@ -274,8 +274,7 @@ class MOALayer(Base):
                 eval_capacity_length,
                 prefix_tokens=reshaped_prefix_tokens,
                 lang_features=lang_features,
-                input_shape=input_shape,
-                lang_ids=kwargs['lang_ids'],
+                input_shape=input_shape
             )
             dispatch_mask = dispatch_mask.to(input.dtype).permute(
                 1, 2, 0

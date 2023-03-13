@@ -4,6 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from .moa_layer import MOALayer
-from .clsa import CLSALayer, NaiveMoALayer
+from .clsa import CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer
 from .top1gate import MOATop1Gate
 from .top2gate import MOATop2Gate

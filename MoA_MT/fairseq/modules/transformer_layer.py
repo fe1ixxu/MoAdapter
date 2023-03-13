@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, NaiveMoALayer
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 
@@ -286,8 +286,8 @@ class TransformerEncoderLayerBase(nn.Module):
                 tok_dropout=cfg.moa_eom,
                 moa_local_drop=cfg.moa_local_drop,
             )
-            if cfg.clsa:
-                self.clsa_layer = CLSALayer(
+            if cfg.moa_type == "clsa":
+                self.moa_wrapper = CLSALayer(
                     self.moa_layer,
                     lambda x: _ffn(
                         x,
@@ -302,8 +302,8 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
-            else:
-                self.naive_moa = NaiveMoALayer(
+            elif cfg.moa_type == "para":
+                self.moa_wrapper = ParallelMoALayer(
                     self.moa_layer,
                     lambda x: _ffn(
                         x,
@@ -316,6 +316,39 @@ class TransformerEncoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                 )
+            elif cfg.moa_type == "seq":
+                self.moa_wrapper = SeqMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                )
+            elif cfg.moa_type == "ad":
+                assert cfg.lang_adapter_bottle_neck > 0
+                self.moa_wrapper = ADMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    cfg.lang_adapter_bottle_neck,
+                    len(cfg.langs),
+                )
+            else:
+                ValueError("No such MoA type")
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
@@ -419,7 +452,9 @@ class TransformerEncoderLayerBase(nn.Module):
         encoder_padding_mask: Optional[Tensor],
         attn_mask: Optional[Tensor] = None,
         tokens: Optional[Tensor] = None,
-        lang_ids:  Optional[Tensor] = None,
+        src_lang_id:  Optional[Tensor] = None,
+        tgt_lang_id: Optional[Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
         """
         Args:
@@ -524,11 +559,14 @@ class TransformerEncoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            if self.cfg.clsa:
-                moa_module = self.clsa_layer
-            else:
-                moa_module = self.naive_moa
-            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="encoder", lang_ids=lang_ids)
+            x, l_aux = self.moa_wrapper(
+                x,
+                residual=residual,
+                prefix_tokens=prefix_tokens,
+                source="encoder",
+                lang_id=src_lang_id,
+                side=adapter_side,
+                )
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
 
         if not self.normalize_before:
@@ -800,8 +838,8 @@ class TransformerDecoderLayerBase(nn.Module):
                 tok_dropout=cfg.moa_eom,
                 moa_local_drop=cfg.moa_local_drop,
             )
-            if cfg.clsa:
-                self.clsa_layer = CLSALayer(
+            if cfg.moa_type == "clsa":
+                self.moa_wrapper = CLSALayer(
                     self.moa_layer,
                     lambda x: _ffn(
                         x,
@@ -816,8 +854,8 @@ class TransformerDecoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
-            else:
-                self.naive_moa = NaiveMoALayer(
+            elif cfg.moa_type == "para":
+                self.moa_wrapper = ParallelMoALayer(
                     self.moa_layer,
                     lambda x: _ffn(
                         x,
@@ -830,6 +868,39 @@ class TransformerDecoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                 )
+            elif cfg.moa_type == "seq":
+                self.moa_wrapper = SeqMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                )
+            elif cfg.moa_type == "ad":
+                assert cfg.lang_adapter_bottle_neck > 0
+                self.moa_wrapper = ADMoALayer(
+                    self.moa_layer,
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    cfg.lang_adapter_bottle_neck,
+                    len(cfg.langs),
+                )
+            else:
+                ValueError("No such MoA type")
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -921,7 +992,9 @@ class TransformerDecoderLayerBase(nn.Module):
         need_attn: bool = False,
         need_head_weights: bool = False,
         tokens: Optional[Tensor] = None,
-        lang_ids: Optional[Tensor] = None,
+        src_lang_id: Optional[Tensor] = None,
+        tgt_lang_id: Optional[Tensor] = None,
+        adapter_side: Optional[str] = "moa",
     ) -> Tuple[
         Tensor, Tensor, Optional[List[Optional[Tensor]]], Optional[Dict[str, Tensor]]
     ]:
@@ -1089,11 +1162,14 @@ class TransformerDecoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            if self.cfg.clsa:
-                moa_module = self.clsa_layer
-            else:
-                moa_module = self.naive_moa
-            x, l_aux = moa_module(x, residual=residual, prefix_tokens=prefix_tokens, source="decoder", lang_ids=lang_ids)
+            x, l_aux = self.moa_wrapper(
+                x,
+                residual=residual,
+                prefix_tokens=prefix_tokens,
+                source="decoder",
+                lang_id=tgt_lang_id,
+                side=adapter_side,
+                )
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
 
         if not self.normalize_before:

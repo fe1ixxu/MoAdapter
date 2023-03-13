@@ -290,6 +290,7 @@ class MoALabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         moa_loss_sum = sum(log.get("moa_loss", 0) for log in logging_outputs)
         # TODO: CMR loss doesn't make sense during validation bc examples aren't random
         cmr_loss_sum = sum(log.get("cmr_loss", 0) for log in logging_outputs)
+        ad_loss_sum = sum(log.get("ad_loss", 0) for log in logging_outputs)
 
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
@@ -305,6 +306,9 @@ class MoALabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         )
         metrics.log_scalar(
             "cmr_gate_loss", cmr_loss_sum / sample_size, sample_size, round=8
+        )
+        metrics.log_scalar(
+            "ad_loss", ad_loss_sum / sample_size, sample_size, round=8
         )
         batch_count = sum(log.get("batch_count", 0) for log in logging_outputs)
 

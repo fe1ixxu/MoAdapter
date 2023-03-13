@@ -409,8 +409,8 @@ class LanguagePairDataset(FairseqDataset):
             pad_to_length=self.fixed_pad_length or pad_to_length,
             pad_to_multiple=self.pad_to_multiple,
         )
-
-        res["net_input"]["tgt_lang_id"] = res["tgt_lang_id"]
+        if "tgt_lang_id" in res:
+            res["net_input"]["tgt_lang_id"] = res["tgt_lang_id"]
         # if self.src_lang_id is not None or self.tgt_lang_id is not None:
         #     src_tokens = res["net_input"]["src_tokens"]
         #     bsz = src_tokens.size(0)
