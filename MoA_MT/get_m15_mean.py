@@ -18,24 +18,27 @@ def get_m15_mean(args):
 
     
     for lang in ALL:
-        if args.engtgt:
-            src, tgt = lang, "eng"
-            bleu_file = f"/predict.{tgt}-{src}.{tgt}.bleu"
-        else:
-            src, tgt = "eng", lang
-            bleu_file = f"/predict.{src}-{tgt}.{tgt}.bleu"
-        ## BLEU
-        with open(args.input + bleu_file) as f:
-            l = f.readlines()
-        bleu = float(l[0].split("=")[1].split(" ")[1])
+        try:
+            if args.engtgt:
+                src, tgt = lang, "eng"
+                bleu_file = f"/predict.{tgt}-{src}.{tgt}.bleu"
+            else:
+                src, tgt = "eng", lang
+                bleu_file = f"/predict.{src}-{tgt}.{tgt}.bleu"
+            ## BLEU
+            with open(args.input + bleu_file) as f:
+                l = f.readlines()
+            bleu = float(l[0].split("=")[1].split(" ")[1])
 
-        all_bleu_scores.append(bleu)
-        if lang in LOW:
-            low_bleu_scores.append(bleu)
-        if lang in VERY_LOW:
-            very_low_bleu_scores.append(bleu)
-        elif lang in HIGH:
-            high_bleu_scores.append(bleu)
+            all_bleu_scores.append(bleu)
+            if lang in LOW:
+                low_bleu_scores.append(bleu)
+            if lang in VERY_LOW:
+                very_low_bleu_scores.append(bleu)
+            elif lang in HIGH:
+                high_bleu_scores.append(bleu)
+        except:
+            print("No results for the language {}".format(lang))
     def get_mean(scores):
         return round(sum(scores)/len(scores) ,2)
     print(f"Avg of all BLEU is {get_mean(all_bleu_scores)}")

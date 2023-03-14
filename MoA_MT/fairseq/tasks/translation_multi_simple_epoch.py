@@ -127,7 +127,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                             "use 'space' to disable detokenization; see fairseq.data.encoders for other options")
         parser.add_argument('--eval-bleu-print-samples', action='store_true',
                             help="print sample generations during validation")
-        parser.add_argument('--ad-weight', type=int, default=1.0,
+        parser.add_argument('--ad-weight', type=float, default=1.0,
                             help="weight for the ad loss")
 
         SamplingMethod.add_arguments(parser)
