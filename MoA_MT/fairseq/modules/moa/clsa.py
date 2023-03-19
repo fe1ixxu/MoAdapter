@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, List
 
 import torch
 import torch.nn.functional as F
@@ -191,20 +191,18 @@ class ADMoALayer(torch.nn.Module):
         ffn_fn: Callable,
         model_dim: int,
         bottleneck_size: int,
-        num_langs: int,
+        num_langs: List,
     ) -> None:
         super().__init__()
         self.moa_layer = moa_layer
         self.ffn_fn = ffn_fn
         self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
-        self.lang_adapters=torch.nn.ModuleList([])
-        for i in range(num_langs):
-            self.lang_adapters.append(
-                NaiveAdapter(
-                    model_dim,
-                    bottleneck_size,
+        self.lang_adapters=torch.nn.ModuleDict([])
+        for lang in num_langs:
+            self.lang_adapters[lang]= NaiveAdapter(
+                model_dim,
+                bottleneck_size,
                 )
-            )
     def forward(
         self,
         *x: torch.Tensor,
@@ -225,7 +223,47 @@ class ADMoALayer(torch.nn.Module):
             x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
             x = x + shortcut
         else:
-            x = self.lang_adapters[lang_id](x)
-            l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
+            x_ffn = self.lang_adapters[lang_id](x)
+            x = self.layer_norm(x)
+            x_moa, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
+            x = x_moa + x_ffn
+            
+            # l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
+
+        return x, l_aux
+
+class SeqNaiveLayer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+        num_langs: List,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
+        self.lang_adapters=torch.nn.ModuleDict([])
+        for lang in num_langs:
+            self.lang_adapters[lang]= NaiveAdapter(
+                model_dim,
+                bottleneck_size,
+                )
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        prefix_tokens=None,
+        lang_id=None,
+        side=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+        shortcut = x
+        x = self.lang_adapters[lang_id](x)
+        l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
 
         return x, l_aux

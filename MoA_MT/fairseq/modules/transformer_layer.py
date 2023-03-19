@@ -23,10 +23,10 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
-
+from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
 
 def _linear(x, weight, bias=None):
     return F.linear(x, weight, bias)
@@ -252,6 +252,7 @@ class TransformerEncoderLayerBase(nn.Module):
                 )
         if build_moa:
             lang_idx = None
+            self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
             if cfg.moa_top1_expert:
                 gate = MOATop1Gate(
                     self.embed_dim,
@@ -345,7 +346,37 @@ class TransformerEncoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     cfg.lang_adapter_bottle_neck,
-                    len(cfg.langs),
+                    cfg.langs,
+                )
+            elif cfg.moa_type == "seq_naive":
+                self.moa_wrapper = SeqNaiveLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.langs,
+                )
+            elif cfg.moa_type == "seq_naive_pair":
+                self.moa_wrapper = SeqNaiveLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.lang_pairs.split(","),
                 )
             else:
                 ValueError("No such MoA type")
@@ -559,12 +590,18 @@ class TransformerEncoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
+            if self.cfg.moa_type != "seq_naive_pair":
+                lang_id = self.lang_dict.symbols[src_lang_id]
+            else:
+                src_key = self.lang_dict.symbols[src_lang_id]
+                tgt_key = self.lang_dict.symbols[tgt_lang_id]
+                lang_id = src_key + "-" + tgt_key
             x, l_aux = self.moa_wrapper(
                 x,
                 residual=residual,
                 prefix_tokens=prefix_tokens,
                 source="encoder",
-                lang_id=src_lang_id,
+                lang_id=lang_id,
                 side=adapter_side,
                 )
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
@@ -800,6 +837,7 @@ class TransformerDecoderLayerBase(nn.Module):
 
         if build_moa:
             lang_idx = None
+            self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
             if cfg.cmr_log_lang_gates:
                 lang_idx = getattr(cfg, "lang_idx")
                 assert lang_idx is not None, cfg
@@ -897,7 +935,37 @@ class TransformerDecoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     cfg.lang_adapter_bottle_neck,
-                    len(cfg.langs),
+                    cfg.langs,
+                )
+            elif cfg.moa_type == "seq_naive":
+                self.moa_wrapper = SeqNaiveLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.langs,
+                )
+            elif cfg.moa_type == "seq_naive_pair":
+                self.moa_wrapper = SeqNaiveLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.lang_pairs.split(","),
                 )
             else:
                 ValueError("No such MoA type")
@@ -1162,12 +1230,18 @@ class TransformerDecoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
+            if self.cfg.moa_type != "seq_naive_pair":
+                lang_id = self.lang_dict.symbols[tgt_lang_id]
+            else:
+                src_key = self.lang_dict.symbols[src_lang_id]
+                tgt_key = self.lang_dict.symbols[tgt_lang_id]
+                lang_id = src_key + "-" + tgt_key
             x, l_aux = self.moa_wrapper(
                 x,
                 residual=residual,
                 prefix_tokens=prefix_tokens,
                 source="decoder",
-                lang_id=tgt_lang_id,
+                lang_id=lang_id,
                 side=adapter_side,
                 )
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim

@@ -440,8 +440,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
         if src_lang_id is not None:
-            src_lang_id = int(src_lang_id[0] - 1)
-            tgt_lang_id = int(tgt_lang_id[0] - 1)
+            src_lang_id = int(src_lang_id[0])
+            tgt_lang_id = int(tgt_lang_id[0])
         # compute self-attention padding mask (involves device-to-host transfer,
         # so put it at the top of the forward)
         if self_attn_padding_mask is None and (
