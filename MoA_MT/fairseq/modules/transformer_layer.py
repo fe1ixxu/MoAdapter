@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, NaiveAdapter
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
@@ -377,6 +377,22 @@ class TransformerEncoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
+                )
+            elif cfg.moa_type == "lua":
+                self.moa_wrapper = LUALayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.lang_adapter_bottle_neck,
+                    cfg.langs,
                 )
             else:
                 ValueError("No such MoA type")
@@ -966,6 +982,22 @@ class TransformerDecoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
+                )
+            elif cfg.moa_type == "lua":
+                self.moa_wrapper = LUALayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.lang_adapter_bottle_neck,
+                    cfg.langs,
                 )
             else:
                 ValueError("No such MoA type")

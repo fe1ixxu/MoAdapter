@@ -345,7 +345,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type == "ad":
+        if model.cfg.moa_type in ["ad", "lua"]:
             loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
@@ -405,22 +405,34 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         sample_size = (
             sample["target"].size(0) if criterion.sentence_avg else sample["ntokens"]
         )
-        loss, nll_loss, moa_loss, cmr_loss, moa_metadata = criterion.compute_loss(
-            model, net_output, sample, sample_size, reduce=reduce
-        )
-        logits = net_output[0].float()
-        logits = F.softmax(logits, dim=-1)
+        if model.cfg.moa_type == "ad": 
+            loss, nll_loss, moa_loss, cmr_loss, moa_metadata = criterion.compute_loss(
+                model, net_output, sample, sample_size, reduce=reduce
+            )
+            logits = net_output[0].float()
+            logits = F.softmax(logits, dim=-1)
 
-        logging_output = {
-            "loss": loss.data,
-            "nll_loss": nll_loss.data,
-            "moa_loss": moa_loss.data,
-            "cmr_loss": cmr_loss.data,
-            "ntokens": sample["ntokens"],
-            "nsentences": sample["target"].size(0),
-            "sample_size": sample_size,
-        }
-        logging_output.update(moa_metadata)
+            logging_output = {
+                "loss": loss.data,
+                "nll_loss": nll_loss.data,
+                "moa_loss": moa_loss.data,
+                "cmr_loss": cmr_loss.data,
+                "ntokens": sample["ntokens"],
+                "nsentences": sample["target"].size(0),
+                "sample_size": sample_size,
+            }
+            logging_output.update(moa_metadata)
+        else:
+            loss, nll_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+            logits = net_output[0].float()
+            logits = F.softmax(logits, dim=-1)
+            logging_output = {
+                "loss": loss.data,
+                "nll_loss": nll_loss.data,
+                "ntokens": sample["ntokens"],
+                "nsentences": sample["target"].size(0),
+                "sample_size": sample_size,
+            }
 
         return loss, logits, sample_size, logging_output
 

@@ -174,7 +174,7 @@ class NaiveAdapter(torch.nn.Module):
         self.layer_norm = LayerNorm(input_size, elementwise_affine=True)
         self.activation_fn = get_activation_fn("relu")
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, **kwargs: Any):
         shortcut = x
 
         x = self.layer_norm(x)
@@ -266,4 +266,48 @@ class SeqNaiveLayer(torch.nn.Module):
         x = self.lang_adapters[lang_id](x)
         l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
 
+        return x, l_aux
+
+
+class LUALayer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size1: int,
+        bottleneck_size2: int,
+        num_langs: List,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
+        self.lang_adapters=torch.nn.ModuleDict([])
+        self.adapter = NaiveAdapter(
+            model_dim,
+            bottleneck_size1,
+            )
+        for lang in num_langs:
+            self.lang_adapters[lang]= NaiveAdapter(
+                model_dim,
+                bottleneck_size2,
+                )
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        prefix_tokens=None,
+        lang_id=None,
+        side=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+ 
+        if side == "moa" or (not self.training):
+            x = self.adapter(x)
+        else:
+            x = self.lang_adapters[lang_id](x)
+        l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
         return x, l_aux
