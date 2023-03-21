@@ -240,6 +240,10 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "Frequency at which we insert Mixture of Adapter layers"},
     )
+    adapter_freq: int = field(
+        default=0,
+        metadata={"help": "Frequency at which we insert Normal Adapter layers"},
+    )
     moa_detail_assign: str = field(
         default="",
         metadata={"help": "Specific assignment for Mixture of Adapter layers, e.g., '1,0,0,0,0,1' means adapter layers are only employed at the first and last encoder or decoder layer"},

@@ -704,7 +704,7 @@ class Trainer(object):
                     logger.info(self.model)
 
                 self.model.load_state_dict(
-                    state["model"], strict=True, model_cfg=self.cfg.model
+                    state["model"], strict=False if self.model.cfg.adapter_freq > 0 else True, model_cfg=self.cfg.model
                 )
                 # save memory for later steps
                 del state["model"]

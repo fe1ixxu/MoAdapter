@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from fairseq.modules import LayerNorm
 from fairseq.utils import get_activation_fn
+from fairseq.modules.linear import Linear as FairLinear
 
 
 class CLSAGate(torch.nn.Module):
@@ -227,6 +228,7 @@ class ADMoALayer(torch.nn.Module):
             x = self.layer_norm(x)
             x_moa, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
             x = x_moa + x_ffn
+            # x_ffn = self.lang_adapters[lang_id](x)
             
             # l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
 
@@ -309,5 +311,74 @@ class LUALayer(torch.nn.Module):
             x = self.adapter(x)
         else:
             x = self.lang_adapters[lang_id](x)
-        l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
+        return x, None
+
+class SingleAdapterLayer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.adapter = NaiveAdapter(
+            model_dim,
+            bottleneck_size,
+            )
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+        x = self.adapter(x)
+        return x, None
+
+class LangMoALayer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+        num_adapters: int,
+        num_langs: int,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.adapters=torch.nn.ModuleList([])
+        self.model_dim
+        for i in len(num_adapters):
+            self.adapters[i]= NaiveAdapter(
+                model_dim,
+                bottleneck_size,
+                )
+        self.gate = FairLinear(model_dim, num_adapters)
+        self.lang_classifer = FairLinear(model_dim, num_langs)
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        lang_id=None,
+        side=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+
+        mean_x = torch.mean(x.reshape(-1, self.model_dim), dim=0) #[dim]
+        gate_logit = self.gate(mean_x) # [num_gate]
+        gate_id = torch.argmax(gate_logit)
+        x = self.adapters[gate_id](x)
+
+        lang_logit = self.lang_classifer(mean_x) # [num_lang]
+        lid = F.cross_entropy(lang_logit, lang_id, label_smoothing=0.1)
+        l_aux = {"lid_loss": lid}
+
         return x, l_aux

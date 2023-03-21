@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, NaiveAdapter
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, SingleAdapterLayer
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
@@ -147,7 +147,7 @@ class TransformerEncoderLayerBase(nn.Module):
         args (argparse.Namespace): parsed command-line arguments
     """
 
-    def __init__(self, cfg, return_fc=False, is_moe_layer=False, is_moa_layer=False):
+    def __init__(self, cfg, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
         super().__init__()
         self.cfg = cfg
         self.return_fc = return_fc
@@ -164,6 +164,7 @@ class TransformerEncoderLayerBase(nn.Module):
         self.normalize_before = cfg.encoder_normalize_before
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
+        self.is_adapter_layer = is_adapter_layer
         self.prefix_token_positions = (
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
         )
@@ -250,9 +251,9 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
+        self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
         if build_moa:
             lang_idx = None
-            self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
             if cfg.moa_top1_expert:
                 gate = MOATop1Gate(
                     self.embed_dim,
@@ -348,7 +349,11 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
                 )
-            elif cfg.moa_type == "seq_naive":
+            else:
+                ValueError("No such MoA type")
+
+        if self.is_adapter_layer:
+            if cfg.moa_type == "seq_naive":
                 self.moa_wrapper = SeqNaiveLayer(
                     lambda x: _ffn(
                         x,
@@ -394,8 +399,22 @@ class TransformerEncoderLayerBase(nn.Module):
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
                 )
+            elif cfg.moa_type == "single":
+                self.moa_wrapper = SingleAdapterLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                )
             else:
-                ValueError("No such MoA type")
+                ValueError("No such Adapter type")
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
@@ -552,7 +571,7 @@ class TransformerEncoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
 
-        if not run_moe and not run_moa:
+        if not run_moe and not run_moa and not self.is_adapter_layer:
             x, fc_result = _ffn(
                 x,
                 self.fc1,
@@ -598,7 +617,7 @@ class TransformerEncoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             x = self.residual_connection(x, residual)
-        elif run_moa:
+        elif run_moa or self.is_adapter_layer:
             # x - seq_len, batch_size, model_dim
             x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
@@ -632,7 +651,7 @@ class TransformerEncoderLayerBase(nn.Module):
 
 # backward compatible with the legacy argparse format
 class TransformerEncoderLayer(TransformerEncoderLayerBase):
-    def __init__(self, args, return_fc=False, is_moe_layer=False, is_moa_layer=False):
+    def __init__(self, args, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
         from fairseq.models.transformer import TransformerConfig
 
         super().__init__(
@@ -640,6 +659,7 @@ class TransformerEncoderLayer(TransformerEncoderLayerBase):
             return_fc=return_fc,
             is_moe_layer=is_moe_layer,
             is_moa_layer=is_moa_layer,
+            is_adapter_layer=is_adapter_layer
         )
         self.args = args
 
@@ -676,6 +696,7 @@ class TransformerDecoderLayerBase(nn.Module):
         add_zero_attn=False,
         is_moe_layer=False,
         is_moa_layer=False,
+        is_adapter_layer=False,
     ):
         super().__init__()
         self.cfg = cfg
@@ -744,6 +765,7 @@ class TransformerDecoderLayerBase(nn.Module):
 
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
+        self.is_adapter_layer = is_adapter_layer
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
         ffn_dim = cfg.decoder.ffn_embed_dim
@@ -850,10 +872,9 @@ class TransformerDecoderLayerBase(nn.Module):
                     cfg.cmr_gate_drop,
                     lang_idx=lang_idx,
                 )
-
+        self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
         if build_moa:
             lang_idx = None
-            self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
             if cfg.cmr_log_lang_gates:
                 lang_idx = getattr(cfg, "lang_idx")
                 assert lang_idx is not None, cfg
@@ -953,7 +974,10 @@ class TransformerDecoderLayerBase(nn.Module):
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
                 )
-            elif cfg.moa_type == "seq_naive":
+            else:
+                ValueError("No such MoA type")
+        if self.is_adapter_layer:
+            if cfg.moa_type == "seq_naive":
                 self.moa_wrapper = SeqNaiveLayer(
                     lambda x: _ffn(
                         x,
@@ -999,8 +1023,22 @@ class TransformerDecoderLayerBase(nn.Module):
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
                 )
+            elif cfg.moa_type == "single":
+                self.moa_wrapper = SingleAdapterLayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                )
             else:
-                ValueError("No such MoA type")
+                assert False, "No such adapter type!"
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -1210,7 +1248,7 @@ class TransformerDecoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
         
-        if not run_moe and not run_moa:
+        if not run_moe and not run_moa and not self.is_adapter_layer:
             x, _ = _ffn(
                 x,
                 fc1=self.fc1,
@@ -1255,7 +1293,7 @@ class TransformerDecoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             x = self.residual_connection(x, residual, alpha=self.alpha2)
-        elif run_moa:
+        elif run_moa or self.is_adapter_layer:
             x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
             prefix_tokens = (
                 tokens[:, self.prefix_token_positions]
@@ -1308,6 +1346,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         add_zero_attn=False,
         is_moe_layer=False,
         is_moa_layer=False,
+        is_adapter_layer=False,
     ):
         from fairseq.models.transformer import TransformerConfig
 
@@ -1318,6 +1357,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             add_zero_attn=add_zero_attn,
             is_moe_layer=is_moe_layer,
             is_moa_layer=is_moa_layer,
+            is_adapter_layer=is_adapter_layer,
         )
         self.args = args
 

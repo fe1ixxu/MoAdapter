@@ -123,7 +123,7 @@ def main(cfg: FairseqConfig) -> None:
     # Freeze parameters except for adapters. FSDP originally only allows that all parameters must
     # have the same status of requires_grad. I modify fairscale library that only accepts parameters
     # with requires_grad=True
-    if model.cfg.moa_freq > 0:
+    if model.cfg.moa_freq > 0 or model.cfg.adapter_freq > 0:
         activated_module_names = [] 
         for module_name, parameters in model.named_parameters():
             flag = False
