@@ -345,7 +345,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type in ["ad", "lua"]:
+        if model.cfg.moa_type in ["ad", "lua", "luaplus"]:
             loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
@@ -423,12 +423,13 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
             }
             logging_output.update(moa_metadata)
         else:
-            loss, nll_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+            loss, nll_loss, lid_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
             logits = net_output[0].float()
             logits = F.softmax(logits, dim=-1)
             logging_output = {
                 "loss": loss.data,
                 "nll_loss": nll_loss.data,
+                "lid_loss": lid_loss.data * sample_size,
                 "ntokens": sample["ntokens"],
                 "nsentences": sample["target"].size(0),
                 "sample_size": sample_size,

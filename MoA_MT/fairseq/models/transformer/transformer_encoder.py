@@ -233,8 +233,8 @@ class TransformerEncoderBase(FairseqEncoder):
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
         if src_lang_id is not None:
-            src_lang_id = int(src_lang_id[0])
-            tgt_lang_id = int(tgt_lang_id[0])
+            src_lang_id = src_lang_id[0]
+            tgt_lang_id = tgt_lang_id[0]
 
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
@@ -264,7 +264,7 @@ class TransformerEncoderBase(FairseqEncoder):
             results["encoder_states"].append(x)
 
         # encoder layers
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss"]
         for key in loss_keys:
             results[key] = []
         for layer in self.layers:

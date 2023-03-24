@@ -161,6 +161,97 @@ def Linear(in_features, out_features, bias=True):
         torch.nn.init.constant_(m.bias, 0.0)
     return m
 
+class L0Adapter(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        bottleneck_size,
+        num_langs,
+        init_mean=0,
+        init_sdev=0.01,
+        init_beta=2/3,
+        zeta=1.1,
+        gamma=-0.1,
+        epsilon=1e-6
+        ):
+        super().__init__()
+        self.size = input_size
+        self.down = Linear(input_size, bottleneck_size)
+        self.up = Linear(bottleneck_size, input_size)
+        self.layer_norm = LayerNorm(input_size, elementwise_affine=True)
+        self.activation_fn = get_activation_fn("relu")
+        self.zeta = zeta
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.down_loga = torch.nn.Parameter(torch.zeros(num_langs, input_size).normal_(init_mean, init_sdev)
+        )
+        self.up_loga = torch.nn.Parameter(torch.zeros(num_langs, input_size).normal_(init_mean, init_sdev)
+        )
+        self.down_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
+        self.up_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
+        
+    def forward(self, x, lang_id):
+        shortcut = x
+        x = self.layer_norm(x)
+
+        ## language L0 for down
+        if self.training:
+            down_mask = self.sample_and_get_masks(x, lang_id, self.down_loga, self.down_beta)
+        else:
+            down_mask = F.hardtanh(torch.sigmoid(self.down_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+        x = F.linear(x, down_mask.view(1, -1) * self.down.weight, self.down.bias)
+
+        x = self.activation_fn(x)
+
+        # language L0 for up
+        if self.training:
+            up_mask = self.sample_and_get_masks(x, lang_id, self.up_loga, self.up_beta)
+        else:
+            up_mask = F.hardtanh(torch.sigmoid(self.up_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+        x = F.linear(x, up_mask.view(-1, 1) * self.up.weight, self.up.bias)
+
+        x = x + shortcut
+        return x
+
+    def sample_and_get_masks(self, x, lang_id, loga, beta):
+        u = torch.zeros(x.shape[-1], dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+        s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga[lang_id]) / beta)
+        s = s * (self.zeta - self.gamma) + self.gamma
+        s = F.hardtanh(s, min_val=0, max_val=1)
+        return s
+
+class L0Layer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+        num_langs: List,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.adapter = L0Adapter(
+            input_size=model_dim,
+            bottleneck_size=bottleneck_size,
+            num_langs=num_langs,
+        )
+
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        lang_id=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+
+        x = self.adapter(x, lang_id)
+        return x, None
+
+
 class NaiveAdapter(torch.nn.Module):
     def __init__(
         self,
@@ -198,12 +289,14 @@ class ADMoALayer(torch.nn.Module):
         self.moa_layer = moa_layer
         self.ffn_fn = ffn_fn
         self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
-        self.lang_adapters=torch.nn.ModuleDict([])
-        for lang in num_langs:
-            self.lang_adapters[lang]= NaiveAdapter(
-                model_dim,
-                bottleneck_size,
-                )
+        self.bottleneck_size = bottleneck_size
+        if bottleneck_size > 0:
+            self.lang_adapters=torch.nn.ModuleDict([])
+            for lang in num_langs:
+                self.lang_adapters[lang]= NaiveAdapter(
+                    model_dim,
+                    bottleneck_size,
+                    )
     def forward(
         self,
         *x: torch.Tensor,
@@ -224,10 +317,14 @@ class ADMoALayer(torch.nn.Module):
             x, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
             x = x + shortcut
         else:
-            x_ffn = self.lang_adapters[lang_id](x)
+            if self.bottleneck_size > 0:
+                x_ffn = self.lang_adapters[lang_id](x)
             x = self.layer_norm(x)
             x_moa, l_aux = self.moa_layer(x, prefix_tokens=prefix_tokens, source=kwargs["source"])
-            x = x_moa + x_ffn
+            if self.bottleneck_size > 0:
+                x = x_moa + x_ffn
+            else:
+                x = x + shortcut
             # x_ffn = self.lang_adapters[lang_id](x)
             
             # l_aux = {"moa_gate_loss": torch.tensor([0.]).to(x.device)} # dummy gate loss
@@ -283,16 +380,18 @@ class LUALayer(torch.nn.Module):
         super().__init__()
         self.ffn_fn = ffn_fn
         self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
-        self.lang_adapters=torch.nn.ModuleDict([])
         self.adapter = NaiveAdapter(
             model_dim,
             bottleneck_size1,
             )
-        for lang in num_langs:
-            self.lang_adapters[lang]= NaiveAdapter(
-                model_dim,
-                bottleneck_size2,
-                )
+        self.bottleneck_size2 = bottleneck_size2
+        if bottleneck_size2 > 0:
+            self.lang_adapters=torch.nn.ModuleDict([])
+            for lang in num_langs:
+                self.lang_adapters[lang]= NaiveAdapter(
+                    model_dim,
+                    bottleneck_size2,
+                    )
     def forward(
         self,
         *x: torch.Tensor,
@@ -310,7 +409,11 @@ class LUALayer(torch.nn.Module):
         if side == "moa" or (not self.training):
             x = self.adapter(x)
         else:
-            x = self.lang_adapters[lang_id](x)
+            if self.bottleneck_size2 > 0:
+                x = self.lang_adapters[lang_id](x)
+            else:
+                x = self.adapter(x)
+
         return x, None
 
 class SingleAdapterLayer(torch.nn.Module):
@@ -351,11 +454,13 @@ class LangMoALayer(torch.nn.Module):
         super().__init__()
         self.ffn_fn = ffn_fn
         self.adapters=torch.nn.ModuleList([])
-        self.model_dim
-        for i in len(num_adapters):
-            self.adapters[i]= NaiveAdapter(
-                model_dim,
-                bottleneck_size,
+        self.model_dim = model_dim
+        for _ in range(num_adapters):
+            self.adapters.append(
+                NaiveAdapter(
+                    model_dim,
+                    bottleneck_size,
+                    )
                 )
         self.gate = FairLinear(model_dim, num_adapters)
         self.lang_classifer = FairLinear(model_dim, num_langs)
@@ -373,12 +478,166 @@ class LangMoALayer(torch.nn.Module):
         x = x + residual
 
         mean_x = torch.mean(x.reshape(-1, self.model_dim), dim=0) #[dim]
-        gate_logit = self.gate(mean_x) # [num_gate]
+        gate_logit = F.softmax(self.gate(mean_x), dim=-1) # [num_gate]
         gate_id = torch.argmax(gate_logit)
-        x = self.adapters[gate_id](x)
+        gate_score = gate_logit[gate_id]
+        x = self.adapters[gate_id](x) * (gate_score / gate_score.data.detach())
 
+        mean_x = torch.mean(x.reshape(-1, self.model_dim), dim=0) #[dim]
         lang_logit = self.lang_classifer(mean_x) # [num_lang]
-        lid = F.cross_entropy(lang_logit, lang_id, label_smoothing=0.1)
+        lid = F.cross_entropy(lang_logit, lang_id.squeeze(0), label_smoothing=0.1)
         l_aux = {"lid_loss": lid}
 
         return x, l_aux
+
+class LUAPLUSLayer(torch.nn.Module):
+    def __init__(
+        self,
+        ffn_fn: Callable,
+        model_dim: int,
+        bottleneck_size: int,
+        num_langs: int,
+    ) -> None:
+        super().__init__()
+        self.ffn_fn = ffn_fn
+        self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
+        self.model_dim = model_dim
+        self.adapter = NaiveAdapter(
+            model_dim,
+            bottleneck_size,
+            )
+        self.lang_embedding = torch.nn.Embedding(num_langs, model_dim)
+        self.lang_classifer = FairLinear(model_dim, num_langs + 1)
+        self.num_langs = num_langs
+    def forward(
+        self,
+        *x: torch.Tensor,
+        residual: torch.Tensor,
+        lang_id=None,
+        side=None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        assert len(x) == 1, "only single input Tensor supported"
+        residual = residual.transpose(0,1)
+        x = self.ffn_fn(*x)
+        x = x + residual
+ 
+        if side == "moa" or (not self.training):
+            lang_embed = self.lang_embedding(lang_id)
+            x = self.adapter(x + lang_embed)
+            mean_x = torch.mean(x.reshape(-1, self.model_dim), dim=0) #[dim]
+            lang_logit = self.lang_classifer(mean_x) # [num_lang]
+            lid = F.cross_entropy(lang_logit, lang_id.squeeze(0))
+            l_aux = {"lid_loss": lid}
+        else:
+            x = self.adapter(x)
+            mean_x = torch.mean(x.reshape(-1, self.model_dim), dim=0) #[dim]
+            lang_logit = self.lang_classifer(mean_x) # [num_lang]
+            lid = F.cross_entropy(lang_logit, torch.ones_like(lang_id).squeeze(0) * self.num_langs)
+            l_aux = {"lid_loss": lid}
+
+        return x, l_aux
+
+# Original LUA version
+# class LUALayer(torch.nn.Module):
+#     def __init__(
+#         self,
+#         ffn_fn: Callable,
+#         model_dim: int,
+#         bottleneck_size1: int,
+#         bottleneck_size2: int,
+#         num_langs: List,
+#     ) -> None:
+#         super().__init__()
+#         self.ffn_fn = ffn_fn
+#         self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
+#         self.lang_adapters=torch.nn.ModuleDict([])
+#         self.adapter = NaiveAdapter(
+#             model_dim,
+#             bottleneck_size1,
+#             )
+#         for lang in num_langs:
+#             self.lang_adapters[lang]= NaiveAdapter(
+#                 model_dim,
+#                 bottleneck_size2,
+#                 )
+#     def forward(
+#         self,
+#         *x: torch.Tensor,
+#         residual: torch.Tensor,
+#         prefix_tokens=None,
+#         lang_id=None,
+#         side=None,
+#         **kwargs: Any
+#     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+#         assert len(x) == 1, "only single input Tensor supported"
+#         residual = residual.transpose(0,1)
+#         x = self.ffn_fn(*x)
+#         x = x + residual
+ 
+#         if side == "moa" or (not self.training):
+#             x = self.adapter(x)
+#         else:
+#             x = self.lang_adapters[lang_id](x)
+#         return x, None
+
+
+# v1:
+class L0Adapter(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        bottleneck_size,
+        num_langs,
+        init_mean=0,
+        init_sdev=0.01,
+        init_beta=2/3,
+        zeta=1.1,
+        gamma=-0.1,
+        epsilon=1e-6
+        ):
+        super().__init__()
+        self.size = input_size
+        self.down = Linear(input_size, bottleneck_size)
+        self.up = Linear(bottleneck_size, input_size)
+        self.layer_norm = LayerNorm(input_size, elementwise_affine=True)
+        self.activation_fn = get_activation_fn("relu")
+        self.zeta = zeta
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.down_loga = torch.nn.Parameter(torch.zeros(num_langs, input_size).normal_(init_mean, init_sdev)
+        )
+        self.up_loga = torch.nn.Parameter(torch.zeros(num_langs, bottleneck_size).normal_(init_mean, init_sdev)
+        )
+        self.down_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
+        self.up_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
+        
+    def forward(self, x, lang_id):
+        shortcut = x
+        x = self.layer_norm(x)
+
+        ## language L0 for down
+        if self.training:
+            down_mask = self.sample_and_get_masks(x, lang_id, self.down_loga, self.down_beta)
+        else:
+            down_mask = F.hardtanh(torch.sigmoid(self.down_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+        x = F.linear(x, down_mask.view(1, -1) * self.down.weight, self.down.bias)
+
+        x = self.activation_fn(x)
+
+        # language L0 for up
+        if self.training:
+            up_mask = self.sample_and_get_masks(x, lang_id, self.up_loga, self.up_beta)
+        else:
+            up_mask = F.hardtanh(torch.sigmoid(self.up_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+        x = F.linear(x, up_mask.view(1, -1) * self.up.weight, self.up.bias)
+
+        x = x + shortcut
+        return x
+
+    def sample_and_get_masks(self, x, lang_id, loga, beta):
+        u = torch.zeros(x.shape[-1], dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+        s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga[lang_id]) / beta)
+        s = s * (self.zeta - self.gamma) + self.gamma
+        s = F.hardtanh(s, min_val=0, max_val=1)
+        return s

@@ -442,8 +442,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
         if src_lang_id is not None:
-            src_lang_id = int(src_lang_id[0])
-            tgt_lang_id = int(tgt_lang_id[0])
+            src_lang_id = src_lang_id[0]
+            tgt_lang_id = tgt_lang_id[0]
         # compute self-attention padding mask (involves device-to-host transfer,
         # so put it at the top of the forward)
         if self_attn_padding_mask is None and (
@@ -469,7 +469,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         results: Dict[str, Optional[Tensor]] = {"inner_states": [x]}
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss"]
         for key in loss_keys:
             results[key] = []
             if encoder_out is not None and key in encoder_out:

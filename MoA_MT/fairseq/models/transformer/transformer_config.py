@@ -266,6 +266,9 @@ class TransformerConfig(FairseqDataclass):
     moa_expert_count: int = field(
         default=0, metadata={"help": "Number of adapters in each MoA Layer"}
     )
+    adapter_num: int = field(
+        default=0, metadata={"help": "Number of adapters in each LangMoA Layer"}
+    )
     moe_gating_use_fp32: bool = field(
         default=False,
         metadata={"help": "Use FP32 computations in MoE top2 gating function"},
