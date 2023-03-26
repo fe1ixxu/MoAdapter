@@ -63,6 +63,7 @@ def X_loss(logits, pad_mask):
 
 def symmetric_KL_loss(p, q, pad_mask):
     """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
+    q = q.detach()
     p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
     dict_size = q.size(-1)
     non_pad_mask = ~pad_mask
@@ -70,6 +71,18 @@ def symmetric_KL_loss(p, q, pad_mask):
     q = q.view(-1, dict_size)[non_pad_mask]
     loss = (p - q) * (torch.log(p) - torch.log(q))
     return 0.5 * loss.sum()
+
+def KL_loss(p, q, pad_mask):
+    """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
+    p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
+    dict_size = q.size(-1)
+    non_pad_mask = ~pad_mask
+    p = p.view(-1, dict_size)[non_pad_mask]
+    q = q.view(-1, dict_size)[non_pad_mask]
+    loss = q * torch.log(q) - q * torch.log(p)
+    loss = loss.sum()
+    assert loss > 0
+    return loss
 
 @register_task("translation_multi_simple_epoch")
 class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
@@ -345,7 +358,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type in ["ad", "lua", "luaplus"]:
+        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair"]:
             loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
@@ -367,6 +380,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         pad_mask = sample["target"].eq(criterion.padding_idx)
         # ad_loss = X_loss(logits, pad_mask)
         ad_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
+        # ad_loss = KL_loss(logits[0], logits[1], pad_mask)
         loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
 
         logging_output = {}
@@ -479,10 +493,13 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         import sacrebleu
 
         # extract the langtok from the sample: assumes the langtok is prepended
-        assert self.args.decoder_langtok
-        prefix_tokens = sample["target"][:, 0]
-        symbols_to_ignore = prefix_tokens.tolist()
-        prefix_tokens = prefix_tokens.resize(prefix_tokens.size(0), 1)
+        if  self.args.decoder_langtok:
+            prefix_tokens = sample["target"][:, 0]
+            symbols_to_ignore = prefix_tokens.tolist()
+            prefix_tokens = prefix_tokens.resize(prefix_tokens.size(0), 1)
+        else:
+            prefix_tokens = None
+            symbols_to_ignore = None
 
         def decode(toks, escape_unk=False, remove_mined_data_tag=False):
             toks = toks.int().cpu()
