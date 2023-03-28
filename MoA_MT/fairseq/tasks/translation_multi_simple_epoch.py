@@ -63,7 +63,7 @@ def X_loss(logits, pad_mask):
 
 def symmetric_KL_loss(p, q, pad_mask):
     """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
-    q = q.detach()
+    # q = q.detach()
     p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
     dict_size = q.size(-1)
     non_pad_mask = ~pad_mask

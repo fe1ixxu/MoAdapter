@@ -366,6 +366,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.langs,
+                    self.dropout_module
                 )
             elif cfg.moa_type == "seq_naive_pair":
                 self.moa_wrapper = SeqNaiveLayer(
@@ -381,6 +382,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
+                    self.dropout_module
                 )
             elif cfg.moa_type == "lua":
                 self.moa_wrapper = LUALayer(
@@ -397,6 +399,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     adapter_hidden_dim,
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
+                    self.dropout_module
                 )
             elif cfg.moa_type == "lua_pair":
                 self.moa_wrapper = LUALayer(
@@ -413,6 +416,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     adapter_hidden_dim,
                     cfg.lang_adapter_bottle_neck,
                     cfg.lang_pairs.split(","),
+                    self.dropout_module,
                 )
             elif cfg.moa_type == "luaplus":
                 self.moa_wrapper = LUAPLUSLayer(
@@ -442,6 +446,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     adapter_hidden_dim,
+                    self.dropout_module,
                 )
             elif cfg.moa_type == "lang_moa":
                 self.moa_wrapper = LangMoALayer(
@@ -472,7 +477,8 @@ class TransformerEncoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     adapter_hidden_dim,
-                    len(cfg.langs),
+                    cfg.lang_pairs.split(","),
+                    self.dropout_module
                 )
             elif cfg.moa_type == "l0drop":
                 self.moa_wrapper = L0DropLayer(
@@ -701,9 +707,9 @@ class TransformerEncoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            if self.cfg.moa_type in ["lang_moa", "luaplus", "l0"]:
+            if self.cfg.moa_type in ["lang_moa", "luaplus"]:
                 lang_id = src_lang_id - 1
-            elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop"]:
+            elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
                 src_key = self.lang_dict.symbols[src_lang_id]
                 tgt_key = self.lang_dict.symbols[tgt_lang_id]
                 lang_id = src_key + "-" + tgt_key
@@ -1069,6 +1075,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.langs,
+                    self.dropout_module
                 )
             elif cfg.moa_type == "seq_naive_pair":
                 self.moa_wrapper = SeqNaiveLayer(
@@ -1084,6 +1091,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
+                    self.dropout_module
                 )
             elif cfg.moa_type == "lua":
                 self.moa_wrapper = LUALayer(
@@ -1100,6 +1108,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     adapter_hidden_dim,
                     cfg.lang_adapter_bottle_neck,
                     cfg.langs,
+                    self.dropout_module
                 )
             elif cfg.moa_type == "lua_pair":
                 self.moa_wrapper = LUALayer(
@@ -1116,6 +1125,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     adapter_hidden_dim,
                     cfg.lang_adapter_bottle_neck,
                     cfg.lang_pairs.split(","),
+                    self.dropout_module
                 )
             elif cfg.moa_type == "luaplus":
                 self.moa_wrapper = LUAPLUSLayer(
@@ -1145,6 +1155,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     adapter_hidden_dim,
+                    self.dropout_module
                 )
             elif cfg.moa_type == "lang_moa":
                 self.moa_wrapper = LangMoALayer(
@@ -1175,7 +1186,8 @@ class TransformerDecoderLayerBase(nn.Module):
                     )[0],
                     self.embed_dim,
                     adapter_hidden_dim,
-                    len(cfg.langs),
+                    cfg.lang_pairs.split(","),
+                    self.dropout_module
                 )
             elif cfg.moa_type == "l0drop":
                 self.moa_wrapper = L0DropLayer(
@@ -1455,9 +1467,9 @@ class TransformerDecoderLayerBase(nn.Module):
                 if tokens is not None and self.prefix_token_positions is not None
                 else None
             )
-            if self.cfg.moa_type in ["lang_moa", "luaplus", "l0"]:
+            if self.cfg.moa_type in ["lang_moa", "luaplus"]:
                 lang_id = tgt_lang_id - 1
-            elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop"]:
+            elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop", "l0"]:
                 src_key = self.lang_dict.symbols[src_lang_id]
                 tgt_key = self.lang_dict.symbols[tgt_lang_id]
                 lang_id = src_key + "-" + tgt_key

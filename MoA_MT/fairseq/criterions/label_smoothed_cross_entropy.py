@@ -23,7 +23,7 @@ class LabelSmoothedCrossEntropyCriterionConfig(FairseqDataclass):
         metadata={"help": "epsilon for label smoothing, 0 means no label smoothing"},
     )
     lid_weight: float = field(
-        default=0.1,
+        default=1,
         metadata={"help": "weight for lid loss"},
     )
     report_accuracy: bool = field(
