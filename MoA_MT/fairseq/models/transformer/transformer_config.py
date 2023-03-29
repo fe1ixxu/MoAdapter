@@ -232,6 +232,10 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "decoder FFN embed dim of alternate decoder layers"},
     )
+    l0_beta: float = field(
+        default=2/3,
+        metadata={"help": "beta for l0 method"},
+    )
     moe_freq: int = field(
         default=0,
         metadata={"help": "Frequency at which we insert MoE Transformer layers"},

@@ -161,6 +161,66 @@ def Linear(in_features, out_features, bias=True):
         torch.nn.init.constant_(m.bias, 0.0)
     return m
 
+class L0Linear(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        num_langs,
+        init_mean=0,
+        init_sdev=0.01,
+        init_beta=2/3,
+        zeta=1.1,
+        gamma=-0.1,
+        epsilon=1e-6
+        ):
+        super().__init__()
+        self.linear = Linear(input_size, output_size)
+        self.zeta = zeta
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+        self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
+        self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
+        self.beta = init_beta
+
+    def forward(self, x, lang_id):
+        lang_id = self.pair2ind[lang_id]
+
+        if self.training:
+            u = torch.zeros(self.linear.weight.shape, dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+            mask = self.sample_and_get_masks(u, lang_id)
+            cs_loss = self.maximize_mask_dis(u, mask, lang_id, self.loga, self.beta)
+        else:
+            mask = F.hardtanh(torch.sigmoid(self.loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+            cs_loss = torch.tensor([0]).to(x.device)
+        x = F.linear(x, mask.view(1, -1) * self.linear.weight, self.linear.bias)
+
+        return x, cs_loss.squeeze(0)
+
+    def sample_and_get_masks(self, u, lang_id):
+        loga = self.loga_row[lang_id].view(1, -1) + self.loga_col[lang_id].view(-1, 1)
+        s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga) / self.beta)
+        s = s * (self.zeta - self.gamma) + self.gamma
+        s = F.hardtanh(s, min_val=0, max_val=1)
+        return s
+
+    def maximize_mask_dis(self, u, mask, lang_id, loga, beta):
+        other_id = torch.randint(loga.shape[0], (1,)).to(mask.device)
+        while other_id == lang_id:
+            other_id = torch.randint(loga.shape[0], (1,)).to(mask.device)
+        other_mask = self.sample_and_get_masks(u, other_id, loga, beta)
+        cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
+        return cs_loss
+    @property
+    def weight(self):
+        return self.linear.weight
+
+    @property
+    def bias(self):
+        return self.linear.bias
+
+
 class L0Adapter(torch.nn.Module):
     def __init__(
         self,
@@ -300,7 +360,8 @@ class L0Layer(torch.nn.Module):
         model_dim: int,
         bottleneck_size: int,
         num_langs: List,
-        dropout_module
+        dropout_module,
+        l0_beta,
     ) -> None:
         super().__init__()
         self.ffn_fn = ffn_fn
@@ -308,6 +369,7 @@ class L0Layer(torch.nn.Module):
             input_size=model_dim,
             bottleneck_size=bottleneck_size,
             num_langs=num_langs,
+            init_beta=l0_beta,
         )
         self.dropout_module = dropout_module
 

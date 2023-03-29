@@ -478,7 +478,8 @@ class TransformerEncoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
-                    self.dropout_module
+                    self.dropout_module,
+                    l0_beta=cfg.l0_beta,
                 )
             elif cfg.moa_type == "l0drop":
                 self.moa_wrapper = L0DropLayer(
@@ -1187,7 +1188,8 @@ class TransformerDecoderLayerBase(nn.Module):
                     self.embed_dim,
                     adapter_hidden_dim,
                     cfg.lang_pairs.split(","),
-                    self.dropout_module
+                    self.dropout_module,
+                    l0_beta=cfg.l0_beta,
                 )
             elif cfg.moa_type == "l0drop":
                 self.moa_wrapper = L0DropLayer(
