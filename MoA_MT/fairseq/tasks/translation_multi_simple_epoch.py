@@ -437,7 +437,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
             }
             logging_output.update(moa_metadata)
         else:
-            loss, nll_loss, lid_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+            loss, nll_loss, lid_loss, _ = criterion.compute_loss(model, net_output, sample, reduce=reduce)
             logits = net_output[0].float()
             logits = F.softmax(logits, dim=-1)
             logging_output = {
