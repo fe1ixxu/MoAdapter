@@ -16,6 +16,7 @@ from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.linear import Linear
 from fairseq.modules.quant_noise import quant_noise
+from fairseq.modules.moa import L0Linear
 
 try:
     HAS_FUSED_MASK_SOFTMAX = True
@@ -48,6 +49,10 @@ class MultiheadAttention(nn.Module):
         scale_heads=False,
         use_fused_softmax=False,
         init_model_on_gpu=False,
+        moa_type=None,
+        num_langs=None,
+        init_beta=2/3,
+
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -85,6 +90,9 @@ class MultiheadAttention(nn.Module):
         )
 
         random_state = torch.get_rng_state()
+        self.l0flag = moa_type in ["l0", "l0lang"]
+        # self.l0flag = False
+
         self.k_proj = quant_noise(
             Linear(
                 self.kdim,
@@ -126,6 +134,37 @@ class MultiheadAttention(nn.Module):
             q_noise,
             qn_block_size,
         )
+
+        if self.l0flag:
+            self.k_proj = L0Linear(
+                self.kdim,
+                embed_dim,
+                num_langs,
+                init_beta=init_beta,
+                linear=self.k_proj,
+                )
+            self.v_proj = L0Linear(
+                self.vdim,
+                embed_dim,
+                num_langs,
+                init_beta=init_beta,
+                linear=self.v_proj,
+                )
+            self.q_proj = L0Linear(
+                embed_dim,
+                embed_dim,
+                num_langs,
+                init_beta=init_beta,
+                linear=self.q_proj,
+                )
+
+            self.out_proj = L0Linear(
+                embed_dim,
+                embed_dim,
+                num_langs,
+                init_beta=init_beta,
+                linear=self.out_proj,
+                )
         torch.set_rng_state(random_state)
         if add_bias_kv:
             self.bias_k = Parameter(torch.Tensor(1, 1, embed_dim))
@@ -312,6 +351,8 @@ class MultiheadAttention(nn.Module):
         attn_mask: Optional[Tensor] = None,
         before_softmax: bool = False,
         need_head_weights: bool = False,
+        lang_id=None,
+        adapter_side=None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -332,6 +373,7 @@ class MultiheadAttention(nn.Module):
         """
         if need_head_weights:
             need_weights = True
+        self.l0flag = True if adapter_side == "moa" else False
 
         is_tpu = query.device.type == "xla"
 
@@ -366,7 +408,24 @@ class MultiheadAttention(nn.Module):
             and not self.skip_embed_dim_check
         ):
             assert key is not None and value is not None
-            return F.multi_head_attention_forward(
+            if self.l0flag:
+                qmask, qmask_loss = self.q_proj.forward_mask(query, lang_id)
+                vmask, vmask_loss = self.v_proj.forward_mask(value, lang_id)
+                kmask, kmask_loss = self.k_proj.forward_mask(key, lang_id)
+                outmask, outmask_loss = self.out_proj.forward_mask(query, lang_id)
+                qweight = qmask * self.q_proj.weight
+                vweight = vmask * self.v_proj.weight
+                kweight = kmask * self.k_proj.weight
+                outweight = outmask * self.out_proj.weight
+                mask_loss = 0.25 * (qmask_loss + vmask_loss + kmask_loss + outmask_loss)
+            else:
+                qweight = self.q_proj.weight
+                vweight = self.v_proj.weight
+                kweight = self.k_proj.weight
+                outweight = self.out_proj.weight
+                mask_loss = torch.tensor(0).to(query.device)
+
+            qkv_out = F.multi_head_attention_forward(
                 query,
                 key,
                 value,
@@ -378,17 +437,18 @@ class MultiheadAttention(nn.Module):
                 self.bias_v,
                 self.add_zero_attn,
                 self.dropout_module.p,
-                self.out_proj.weight,
+                outweight,
                 self.out_proj.bias,
                 self.training or self.dropout_module.apply_during_inference,
                 key_padding_mask,
                 need_weights,
                 attn_mask,
                 use_separate_proj_weight=True,
-                q_proj_weight=self.q_proj.weight,
-                k_proj_weight=self.k_proj.weight,
-                v_proj_weight=self.v_proj.weight,
+                q_proj_weight=qweight,
+                k_proj_weight=kweight,
+                v_proj_weight=vweight,
             )
+            return qkv_out[0], qkv_out[1], mask_loss
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -400,26 +460,47 @@ class MultiheadAttention(nn.Module):
                     key = value = None
         else:
             saved_state = None
+        if self.l0flag:
+            if self.self_attention:
+                q, qmask_loss = self.q_proj(query, lang_id)
+                k, kmask_loss = self.k_proj(query, lang_id)
+                v, vmask_loss = self.v_proj(query, lang_id)
+            elif self.encoder_decoder_attention:
+                # encoder-decoder attention
+                q, qmask_loss = self.q_proj(query, lang_id)
+                if key is None:
+                    assert value is None
+                    k = v = None
+                    kmask_loss = vmask_loss = 0
+                else:
+                    k, kmask_loss = self.k_proj(key, lang_id)
+                    v, vmask_loss = self.v_proj(key, lang_id)
 
-        if self.self_attention:
-            q = self.q_proj(query)
-            k = self.k_proj(query)
-            v = self.v_proj(query)
-        elif self.encoder_decoder_attention:
-            # encoder-decoder attention
-            q = self.q_proj(query)
-            if key is None:
-                assert value is None
-                k = v = None
             else:
-                k = self.k_proj(key)
-                v = self.v_proj(key)
-
+                assert key is not None and value is not None
+                q, qmask_loss = self.q_proj(query, lang_id)
+                k, kmask_loss = self.k_proj(key, lang_id)
+                v, vmask_loss = self.v_proj(value, lang_id)
         else:
-            assert key is not None and value is not None
-            q = self.q_proj(query)
-            k = self.k_proj(key)
-            v = self.v_proj(value)
+            if self.self_attention:
+                q = self.q_proj(query)
+                k = self.k_proj(query)
+                v = self.v_proj(query)
+            elif self.encoder_decoder_attention:
+                # encoder-decoder attention
+                q = self.q_proj(query)
+                if key is None:
+                    assert value is None
+                    k = v = None
+                else:
+                    k = self.k_proj(key)
+                    v = self.v_proj(key)
+
+            else:
+                assert key is not None and value is not None
+                q = self.q_proj(query)
+                k = self.k_proj(key)
+                v = self.v_proj(value)
 
         if not self.use_fused_softmax:
             q *= self.scaling
@@ -586,7 +667,10 @@ class MultiheadAttention(nn.Module):
             attn = attn.contiguous().view(tgt_len, bsz, self.embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.embed_dim)
-        attn = self.out_proj(attn)
+        if self.l0flag:
+            attn, outmask_loss = self.out_proj(attn, lang_id)
+        else:
+            attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
@@ -595,8 +679,11 @@ class MultiheadAttention(nn.Module):
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
-
-        return attn, attn_weights
+        if self.l0flag:
+            mask_loss = 0.25 * (qmask_loss + kmask_loss + vmask_loss + outmask_loss)
+        else:
+            mask_loss = torch.tensor(0).to(query.device)
+        return attn, attn_weights, mask_loss
 
     @staticmethod
     def _append_prev_key_padding_mask(

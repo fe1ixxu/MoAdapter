@@ -236,6 +236,10 @@ class TransformerConfig(FairseqDataclass):
         default=2/3,
         metadata={"help": "beta for l0 method"},
     )
+    loga_num: int = field(
+        default=32,
+        metadata={"help": "loga number for l0 method"},
+    )
     moe_freq: int = field(
         default=0,
         metadata={"help": "Frequency at which we insert MoE Transformer layers"},

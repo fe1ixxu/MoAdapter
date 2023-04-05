@@ -358,7 +358,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair"]:
+        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair", "l0", "l0lang"]:
             loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
@@ -866,3 +866,5 @@ def gather_model_moe_metadata(model, vocab_size, src_tokens=None, tgt_tokens=Non
                     counters[f"token_gates_{shorten_name(name)}"] = num_tokens_by_index
 
     return moe_logging_output, counters
+
+

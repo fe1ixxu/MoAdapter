@@ -29,6 +29,7 @@ from fairseq.modules import (
 from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.linear import Linear
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
+from fairseq.modules.moa import L0Linear
 
 
 # rewrite name for backward compatibility in `make_generation_fast_`
@@ -163,23 +164,44 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 self.layer_norm = self.layer_norm.cuda().half()
         else:
             self.layer_norm = None
-
-        self.project_out_dim = (
-            Linear(
-                embed_dim,
-                self.output_embed_dim,
-                bias=False,
-                init_model_on_gpu=init_model_on_gpu,
+        # self.l0flag = cfg.moa_type in ["l0", "l0lang"]
+        self.l0flag = False
+        if self.l0flag:
+            self.project_out_dim = (
+                L0Linear(
+                    embed_dim,
+                    self.output_embed_dim,
+                    cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
+                    init_beta=cfg.l0_beta,
+                )
+                if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
+                
+                else None
             )
-            if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
-            else None
-        )
+        else:
+            self.project_out_dim = (
+                Linear(
+                    embed_dim,
+                    self.output_embed_dim,
+                    bias=False,
+                    init_model_on_gpu=init_model_on_gpu,
+                )
+                if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
+                else None
+            )
 
         self.adaptive_softmax = None
         self.output_projection = output_projection
         if self.output_projection is None:
             self.build_output_projection(cfg, dictionary, embed_tokens)
-
+        if self.l0flag:
+            self.output_projection = L0Linear(
+                    self.output_embed_dim,
+                    len(dictionary),
+                    cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
+                    linear=self.output_projection,
+                    init_beta=cfg.l0_beta,
+                )
         if self.use_alibi:
             self.alibi = self._build_alibi_tensor(
                 self.max_positions(), cfg.decoder.attention_heads
@@ -369,7 +391,19 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             adapter_side=adapter_side,
         )
         if not features_only:
-            x = self.output_layer(x)
+            if self.l0flag:
+                if self.cfg.moa_type in ["lang_moa", "luaplus"]:
+                    lang_id = tgt_lang_id[0] - 1
+                elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
+                    src_key = self.layers[0].lang_dict.symbols[src_lang_id[0]]
+                    tgt_key = self.layers[0].lang_dict.symbols[tgt_lang_id[0]]
+                    lang_id = src_key + "-" + tgt_key
+                else:
+                    lang_id = self.lang_dict.symbols[tgt_lang_id[0]]
+                x, mask_loss = self.output_layer(x, lang_id)
+                extra["lid_loss"].append(mask_loss)
+            else:
+                x = self.output_layer(x)
         return x, extra
 
     def extract_features(
@@ -520,15 +554,30 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         x = x.transpose(0, 1)
 
         if self.project_out_dim is not None:
-            x = self.project_out_dim(x)
+            if self.l0flag:
+                if self.cfg.moa_type in ["lang_moa", "luaplus"]:
+                    lang_id = tgt_lang_id - 1
+                elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
+                    src_key = self.layers[0].lang_dict.symbols[src_lang_id]
+                    tgt_key = self.layers[0].lang_dict.symbols[tgt_lang_id]
+                    lang_id = src_key + "-" + tgt_key
+                else:
+                    lang_id = self.lang_dict.symbols[tgt_lang_id]
+                x, mask_loss = self.project_out_dim(x, lang_id)
+                results["lid_loss"].append(mask_loss)
+            else:
+                x = self.project_out_dim(x)
 
         return x, results
 
-    def output_layer(self, features):
+    def output_layer(self, features, lang_id=None):
         """Project features to the vocabulary size."""
         if self.adaptive_softmax is None:
             # project back to size of vocabulary
-            return self.output_projection(features)
+            if self.l0flag:
+                return self.output_projection(features, lang_id)
+            else:
+                return self.output_projection(features)
         else:
             return features
 
