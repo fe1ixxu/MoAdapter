@@ -296,8 +296,9 @@ class L0Linear(torch.nn.Module):
         self.epsilon = epsilon
         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
         self.num_loga = num_loga
-        self.loga_row = torch.nn.Parameter(torch.zeros(num_loga, len(num_langs), input_size).normal_(init_mean, init_sdev))
-        self.loga_col = torch.nn.Parameter(torch.zeros(num_loga, len(num_langs), output_size).normal_(init_mean, init_sdev))
+        self.num_langs = len(num_langs)
+        self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
+        self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
 
         self.beta = init_beta
 
@@ -318,20 +319,24 @@ class L0Linear(torch.nn.Module):
         return s
 
     def get_mixed_loga(self, lang_id):
-        a = self.loga_row[:, lang_id, :].view(self.num_loga, 1, -1)
-        b = self.loga_col[:, lang_id, :].view(self.num_loga, -1, 1)
+        a = self.loga_row[lang_id, :].view(1, -1)
+        b = self.loga_col[lang_id, :].view(-1, 1)
         c = a + b
         # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
-        return c.mean(dim=0)
+        return c
 
     def maximize_mask_dis(self, u, mask, lang_id):
-        other_id = torch.randint(self.loga_row.shape[1], (1,)).to(mask.device)
+        other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
         while other_id == lang_id:
-            other_id = torch.randint(self.loga_row.shape[1], (1,)).to(mask.device)
+            other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
         other_mask = self.sample_and_get_masks(u, other_id)
         # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
         mask_loss = 1 - F.mse_loss(mask, other_mask)
+        buget_loss = torch.abs(torch.mean(mask) - self.num_loga)
+        other_buget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
+        mask_loss = mask_loss + 0.5 * (buget_loss + other_buget_loss)
         return mask_loss
+
 
     def forward_mask(self, x, lang_id):
         lang_id = self.pair2ind[lang_id]

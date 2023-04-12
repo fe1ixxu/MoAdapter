@@ -236,7 +236,7 @@ class TransformerConfig(FairseqDataclass):
         default=2/3,
         metadata={"help": "beta for l0 method"},
     )
-    loga_num: int = field(
+    loga_num: float = field(
         default=32,
         metadata={"help": "loga number for l0 method"},
     )
