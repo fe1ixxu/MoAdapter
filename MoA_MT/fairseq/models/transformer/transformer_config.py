@@ -237,7 +237,7 @@ class TransformerConfig(FairseqDataclass):
         metadata={"help": "beta for l0 method"},
     )
     loga_num: float = field(
-        default=32,
+        default=0,
         metadata={"help": "loga number for l0 method"},
     )
     moe_freq: int = field(

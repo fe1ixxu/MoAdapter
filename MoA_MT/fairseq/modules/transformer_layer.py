@@ -197,6 +197,7 @@ class TransformerEncoderLayerBase(nn.Module):
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
         self.is_adapter_layer = is_adapter_layer
+        # self.is_adapter_layer = False
         self.prefix_token_positions = (
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
         )
@@ -664,6 +665,7 @@ class TransformerEncoderLayerBase(nn.Module):
             moa_type=cfg.moa_type,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
+            loga_num=cfg.loga_num,
         )
 
     def residual_connection(self, x, residual):
@@ -751,7 +753,7 @@ class TransformerEncoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
 
-        if (not run_moe and not run_moa and not self.is_adapter_layer) and  (adapter_side != "moa"):
+        if not run_moe and not run_moa and not self.is_adapter_layer:
             x, fc_result = _ffn(
                 x,
                 self.fc1,
@@ -817,7 +819,8 @@ class TransformerEncoderLayerBase(nn.Module):
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             if attn_mask_loss != 0:
                 l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss * 4) / 6
-
+        if l_aux == None and attn_mask_loss != 0:
+            l_aux = {"lid_loss": attn_mask_loss}
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
@@ -943,6 +946,7 @@ class TransformerDecoderLayerBase(nn.Module):
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
         self.is_adapter_layer = is_adapter_layer
+        # self.is_adapter_layer = False
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
         ffn_dim = cfg.decoder.ffn_embed_dim
@@ -1408,6 +1412,7 @@ class TransformerDecoderLayerBase(nn.Module):
             moa_type=cfg.moa_type,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
+            loga_num=cfg.loga_num,
         )
 
     def build_encoder_attention(self, embed_dim, cfg):
@@ -1425,6 +1430,7 @@ class TransformerDecoderLayerBase(nn.Module):
             moa_type=cfg.moa_type,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
+            loga_num=cfg.loga_num,
         )
 
     def prepare_for_onnx_export_(self):
@@ -1580,7 +1586,7 @@ class TransformerDecoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
         
-        if (not run_moe and not run_moa and not self.is_adapter_layer) or (adapter_side != "moa"):
+        if not run_moe and not run_moa and not self.is_adapter_layer:
             x, _ = _ffn(
                 x,
                 fc1=self.fc1,
@@ -1644,7 +1650,8 @@ class TransformerDecoderLayerBase(nn.Module):
             if attn_mask_loss1 != 0:
                 l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss1 * 4 + attn_mask_loss2 * 4) / 10
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
-
+        if l_aux == None and attn_mask_loss1 != 0:
+            l_aux =  {"lid_loss": 0.5 * (attn_mask_loss1 + attn_mask_loss2)}
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         if self.onnx_trace and incremental_state is not None:

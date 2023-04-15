@@ -150,7 +150,8 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         if var_count > 0:
             var_loss = var_loss / var_count
 
-        loss = loss + self.lid_weight * lid_loss + self.var_weight * var_loss 
+        if model.training:
+            loss = loss + self.lid_weight * lid_loss + self.var_weight * var_loss 
         return loss, nll_loss, lid_loss, var_loss
 
     def compute_accuracy(self, model, net_output, sample):

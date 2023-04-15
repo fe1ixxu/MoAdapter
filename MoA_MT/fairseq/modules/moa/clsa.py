@@ -321,9 +321,9 @@ class L0Linear(torch.nn.Module):
     def get_mixed_loga(self, lang_id):
         a = self.loga_row[lang_id, :].view(1, -1)
         b = self.loga_col[lang_id, :].view(-1, 1)
-        c = a + b
+        # c = a + b
         # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
-        return c
+        return a + b
 
     def maximize_mask_dis(self, u, mask, lang_id):
         other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
@@ -332,9 +332,11 @@ class L0Linear(torch.nn.Module):
         other_mask = self.sample_and_get_masks(u, other_id)
         # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
         mask_loss = 1 - F.mse_loss(mask, other_mask)
-        buget_loss = torch.abs(torch.mean(mask) - self.num_loga)
-        other_buget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
-        mask_loss = mask_loss + 0.5 * (buget_loss + other_buget_loss)
+        if self.num_loga > 0:
+            buget_loss = torch.abs(torch.mean(mask) - self.num_loga)
+            other_buget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
+            mask_loss = mask_loss + 0.5 * (buget_loss + other_buget_loss)
+            print(buget_loss, other_buget_loss)
         return mask_loss
 
 
@@ -347,7 +349,8 @@ class L0Linear(torch.nn.Module):
         else:
             loga = self.get_mixed_loga(lang_id)
             mask = F.hardtanh(torch.sigmoid(loga) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
-            mask_loss = torch.tensor(0).to(x.device)
+            # mask_loss = torch.tensor(0).to(x.device)
+            mask_loss =  torch.sum(torch.where(mask > 0, 1, 0)) / (mask.shape[0] * mask.shape[1])
         return mask, mask_loss
 
     @property

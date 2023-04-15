@@ -52,6 +52,7 @@ class MultiheadAttention(nn.Module):
         moa_type=None,
         num_langs=None,
         init_beta=2/3,
+        loga_num=0,
 
     ):
         super().__init__()
@@ -142,6 +143,7 @@ class MultiheadAttention(nn.Module):
                 num_langs,
                 init_beta=init_beta,
                 linear=self.k_proj,
+                num_loga=loga_num,
                 )
             self.v_proj = L0Linear(
                 self.vdim,
@@ -149,6 +151,7 @@ class MultiheadAttention(nn.Module):
                 num_langs,
                 init_beta=init_beta,
                 linear=self.v_proj,
+                num_loga=loga_num,
                 )
             self.q_proj = L0Linear(
                 embed_dim,
@@ -156,6 +159,7 @@ class MultiheadAttention(nn.Module):
                 num_langs,
                 init_beta=init_beta,
                 linear=self.q_proj,
+                num_loga=loga_num,
                 )
 
             self.out_proj = L0Linear(
@@ -164,6 +168,7 @@ class MultiheadAttention(nn.Module):
                 num_langs,
                 init_beta=init_beta,
                 linear=self.out_proj,
+                num_loga=loga_num,
                 )
         torch.set_rng_state(random_state)
         if add_bias_kv:
@@ -373,7 +378,7 @@ class MultiheadAttention(nn.Module):
         """
         if need_head_weights:
             need_weights = True
-        self.l0flag = True if adapter_side == "moa" else False
+        # self.l0flag = True if adapter_side == "moa" else False
 
         is_tpu = query.device.type == "xla"
 
