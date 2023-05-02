@@ -223,6 +223,13 @@ def main(cfg: FairseqConfig):
                     "src_lengths": src_lengths,
                 },
             }
+
+            if cfg.task.enable_lang_ids and cfg.task.one_dataset_per_batch:
+                src_lang_id = task.data_manager.lang_dict.indices[task.source_langs[0]]
+                tgt_lang_id = task.data_manager.lang_dict.indices[task.target_langs[0]]
+
+                sample["net_input"]["src_lang_id"] = src_tokens.new([src_lang_id]).repeat(src_tokens.size(0), 1)
+                sample["net_input"]["tgt_lang_id"] = src_tokens.new([tgt_lang_id]).repeat(src_tokens.size(0), 1)
             translate_start_time = time.time()
             translations = task.inference_step(
                 generator, models, sample, constraints=constraints

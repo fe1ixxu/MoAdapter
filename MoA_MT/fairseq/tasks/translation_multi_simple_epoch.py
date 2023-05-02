@@ -358,7 +358,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair"]:
+        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair", "l0langsum", "l0langsumid", "l0langsumid2"]:
             loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
@@ -377,11 +377,15 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                     logits.append(logit)
                     logging_outputs.append(logging_output)
 
-        pad_mask = sample["target"].eq(criterion.padding_idx)
-        # ad_loss = X_loss(logits, pad_mask)
-        ad_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
-        # ad_loss = KL_loss(logits[0], logits[1], pad_mask)
-        loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
+        if model.cfg.moa_type == "l0langsum":
+            loss = sum(losses)/len(losses)
+            ad_loss = torch.zeros_like(loss)
+        else:
+            pad_mask = sample["target"].eq(criterion.padding_idx)
+            # ad_loss = X_loss(logits, pad_mask)
+            ad_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
+            # ad_loss = KL_loss(logits[0], logits[1], pad_mask)
+            loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
 
         logging_output = {}
         for k in logging_outputs[0].keys():
@@ -436,14 +440,27 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                 "sample_size": sample_size,
             }
             logging_output.update(moa_metadata)
+        elif model.cfg.moa_type == "l0langsum":
+            loss, nll_loss, lid_loss, budget_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+            logits = None
+            logging_output = {
+                "loss": loss.data,
+                "nll_loss": nll_loss.data,
+                "lid_loss": lid_loss.data * sample_size,
+                "budget_loss": budget_loss * sample_size,
+                "ntokens": sample["ntokens"],
+                "nsentences": sample["target"].size(0),
+                "sample_size": sample_size,
+            }
         else:
-            loss, nll_loss, lid_loss, _ = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+            loss, nll_loss, lid_loss, budget_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
             logits = net_output[0].float()
             logits = F.softmax(logits, dim=-1)
             logging_output = {
                 "loss": loss.data,
                 "nll_loss": nll_loss.data,
                 "lid_loss": lid_loss.data * sample_size,
+                "budget_loss": budget_loss * sample_size,
                 "ntokens": sample["ntokens"],
                 "nsentences": sample["target"].size(0),
                 "sample_size": sample_size,

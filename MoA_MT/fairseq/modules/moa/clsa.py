@@ -271,6 +271,213 @@ class MLP(torch.nn.Module):
 #         return self.linear.bias
 
 
+## 2d outside plus
+# class L0Linear(torch.nn.Module):
+#     def __init__(
+#         self,
+#         input_size,
+#         output_size,
+#         num_langs,
+#         num_loga=1,
+#         init_mean=0,
+#         init_sdev=0.01,
+#         init_beta=2/3,
+#         zeta=1.1,
+#         gamma=-0.1,
+#         epsilon=1e-6,
+#         linear=None,
+#         ):
+#         super().__init__()
+#         if linear is not None:
+#             self.linear = linear
+#         else:
+#             self.linear = Linear(input_size, output_size)
+#         self.zeta = zeta
+#         self.gamma = gamma
+#         self.epsilon = epsilon
+#         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+#         self.num_loga = num_loga
+#         self.num_langs = len(num_langs)
+#         self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
+#         self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
+
+#         self.beta = init_beta
+
+#     def forward(self, x, lang_id=None):
+#         if lang_id == None:
+#             x = F.linear(x, self.linear.weight, self.linear.bias)
+#             return x
+#         else:
+#             mask, mask_loss, budget_loss = self.forward_mask(x, lang_id)
+#             # x = F.linear(x, 0.5 * (mask.detach() * self.linear.weight + mask * self.linear.weight.detach()), self.linear.bias)
+#             x = F.linear(x, mask * self.linear.weight, self.linear.bias)
+#             return x, mask_loss, budget_loss
+
+#     def sample_and_get_masks(self, ur, uc, lang_id):
+#         logar, logac = self.get_mixed_loga(lang_id)
+#         sr = torch.sigmoid((torch.log(ur) - torch.log(1-ur) + logar) / self.beta)
+#         sc = torch.sigmoid((torch.log(uc) - torch.log(1-uc) + logac) / self.beta)
+#         sr = sr * (self.zeta - self.gamma) + self.gamma
+#         sc = sc * (self.zeta - self.gamma) + self.gamma
+#         sr = F.hardtanh(sr, min_val=0, max_val=1).view(1, -1)
+#         sc = F.hardtanh(sc, min_val=0, max_val=1).view(-1, 1)
+#         s = 0.5 * ( sr + sc )
+#         return s
+
+#     def get_mixed_loga(self, lang_id):
+#         a = self.loga_row[lang_id, :]
+#         b = self.loga_col[lang_id, :]
+#         # c = a + b
+#         # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
+#         return a, b
+
+#     def maximize_mask_dis(self, ur, uc, mask, lang_id):
+#         other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         while other_id == lang_id:
+#             other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         other_mask = self.sample_and_get_masks(ur, uc, other_id)
+#         # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
+#         mask_loss = 1 - F.mse_loss(mask, other_mask)
+#         if self.num_loga > 0:
+#             budget_loss = torch.abs(torch.mean(mask) - self.num_loga)
+#             other_budget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
+#             budget_loss = 0.5 * (budget_loss + other_budget_loss)
+#         else:
+#             budget_loss = 0
+#         return mask_loss, budget_loss
+
+
+#     def forward_mask(self, x, lang_id):
+#         lang_id = self.pair2ind[lang_id]
+#         if self.training:
+#             ur = torch.zeros(self.linear.weight.shape[1], dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+#             uc = torch.zeros(self.linear.weight.shape[0], dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+#             mask = self.sample_and_get_masks(ur, uc, lang_id)
+#             mask_loss, budget_loss = self.maximize_mask_dis(ur, uc, mask, lang_id)
+#             # mask_loss = budget_loss = 0
+#         else:
+#             logar, logac = self.get_mixed_loga(lang_id)
+#             mask_r = F.hardtanh(torch.sigmoid(logar) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1).view(1, -1)
+#             mask_c = F.hardtanh(torch.sigmoid(logac) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1).view(-1, 1)
+#             mask = 0.5 * (mask_r + mask_c)
+#             # mask_loss = torch.tensor(0).to(x.device)
+#             budget_loss = torch.mean(mask)
+#             mask_loss =  0 # torch.sum(torch.where(mask > 0, 1, 0)) / (mask.shape[0] * mask.shape[1])
+#         mask = 0.5 * (1 + mask) 
+#         return mask, mask_loss, budget_loss
+
+#     @property
+#     def weight(self):
+#         return self.linear.weight
+
+#     @property
+#     def bias(self):
+#         return self.linear.bias
+
+## 2d inside
+# class L0Linear(torch.nn.Module):
+#     def __init__(
+#         self,
+#         input_size,
+#         output_size,
+#         num_langs,
+#         num_loga=1,
+#         init_mean=0,
+#         init_sdev=0.01,
+#         init_beta=2/3,
+#         zeta=1.1,
+#         gamma=-0.1,
+#         epsilon=1e-6,
+#         linear=None,
+#         ):
+#         super().__init__()
+#         if linear is not None:
+#             self.linear = linear
+#         else:
+#             self.linear = Linear(input_size, output_size)
+#         self.zeta = zeta
+#         self.gamma = gamma
+#         self.epsilon = epsilon
+#         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+#         self.num_loga = num_loga
+#         self.num_langs = len(num_langs)
+#         self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
+#         self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
+
+#         self.beta = init_beta
+
+#     def forward(self, x, lang_id=None):
+#         if lang_id == None:
+#             x = F.linear(x, self.linear.weight, self.linear.bias)
+#             return x
+#         else:
+#             mask, mask_loss, budget_loss = self.forward_mask(x, lang_id)
+#             # x = F.linear(x, 0.5 * (mask.detach() * self.linear.weight + mask * self.linear.weight.detach()), self.linear.bias)
+#             x = F.linear(x, mask * self.linear.weight, self.linear.bias)
+#             return x, mask_loss, budget_loss
+
+#     def sample_and_get_masks(self, u, lang_id):
+#         loga = self.get_mixed_loga(lang_id)
+#         s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga) / self.beta)
+#         s = s * (self.zeta - self.gamma) + self.gamma
+#         s = F.hardtanh(s, min_val=0, max_val=1)
+#         return s
+
+#     def get_mixed_loga(self, lang_id):
+#         a = self.loga_row[lang_id, :].view(1, -1)
+#         b = self.loga_col[lang_id, :].view(-1, 1)
+#         # c = a + b
+#         # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
+#         return a + b
+
+#     def maximize_mask_dis(self, u, mask, lang_id):
+#         other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         while other_id == lang_id:
+#             other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         other_mask = self.sample_and_get_masks(u, other_id)
+#         # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
+#         mask_loss = 1 - F.mse_loss(mask, other_mask)
+#         if self.num_loga > 0:
+#             budget_loss = torch.abs(torch.mean(mask) - self.num_loga)
+#             other_budget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
+#             budget_loss = 0.5 * (budget_loss + other_budget_loss)
+#         else:
+#             budget_loss = 0
+#         return mask_loss, budget_loss
+
+
+#     def forward_mask(self, x, lang_id):
+#         lang_id = self.pair2ind[lang_id]
+#         if self.training:
+#             u = torch.zeros(self.linear.weight.shape, dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+#             mask = self.sample_and_get_masks(u, lang_id)
+#             mask_loss, budget_loss = self.maximize_mask_dis(u, mask, lang_id)
+#             # mask_loss = budget_loss = 0
+#         else:
+#             loga = self.get_mixed_loga(lang_id)
+#             mask = F.hardtanh(torch.sigmoid(loga) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+#             # mask_loss = torch.tensor(0).to(x.device)
+#             budget_loss = torch.mean(mask)
+#             mask_loss =  0 # torch.sum(torch.where(mask > 0, 1, 0)) / (mask.shape[0] * mask.shape[1])
+#         mask = 1 + mask 
+#         return mask, mask_loss, budget_loss
+
+#     @property
+#     def weight(self):
+#         return self.linear.weight
+
+#     @property
+#     def bias(self):
+#         return self.linear.bias
+
+# if __name__ == "__main__":
+#     a = L0Linear(10,5,[i for i in range(10)])
+#     b = torch.randn(1,10)
+#     print(a(b, 2))
+#     # print(a(b,2))
+#     # print(a.training, a(b, 2))
+
+## lora
 class L0Linear(torch.nn.Module):
     def __init__(
         self,
@@ -295,63 +502,27 @@ class L0Linear(torch.nn.Module):
         self.gamma = gamma
         self.epsilon = epsilon
         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
-        self.num_loga = num_loga
+        self.num_loga = int(num_loga)
         self.num_langs = len(num_langs)
-        self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
-        self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
-
-        self.beta = init_beta
+        self.w1 = torch.nn.Parameter(torch.zeros(len(num_langs) + 1, output_size, self.num_loga).normal_(init_mean, init_sdev))
+        self.w2 = torch.nn.Parameter(torch.zeros(len(num_langs) + 1, self.num_loga, input_size))
 
     def forward(self, x, lang_id=None):
         if lang_id == None:
             x = F.linear(x, self.linear.weight, self.linear.bias)
             return x
         else:
-            mask, mask_loss = self.forward_mask(x, lang_id)
-            x = F.linear(x, mask * self.linear.weight, self.linear.bias)
-            return x, mask_loss
-
-    def sample_and_get_masks(self, u, lang_id):
-        loga = self.get_mixed_loga(lang_id)
-        s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga) / self.beta)
-        s = s * (self.zeta - self.gamma) + self.gamma
-        s = F.hardtanh(s, min_val=0, max_val=1)
-        return s
-
-    def get_mixed_loga(self, lang_id):
-        a = self.loga_row[lang_id, :].view(1, -1)
-        b = self.loga_col[lang_id, :].view(-1, 1)
-        # c = a + b
-        # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
-        return a + b
-
-    def maximize_mask_dis(self, u, mask, lang_id):
-        other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
-        while other_id == lang_id:
-            other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
-        other_mask = self.sample_and_get_masks(u, other_id)
-        # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
-        mask_loss = 1 - F.mse_loss(mask, other_mask)
-        if self.num_loga > 0:
-            buget_loss = torch.abs(torch.mean(mask) - self.num_loga)
-            other_buget_loss = torch.abs(torch.mean(other_mask) - self.num_loga)
-            mask_loss = mask_loss + 0.5 * (buget_loss + other_buget_loss)
-            print(buget_loss, other_buget_loss)
-        return mask_loss
-
+            mask, mask_loss, budget_loss = self.forward_mask(x, lang_id)
+            # x = F.linear(x, 0.5 * (mask.detach() * self.linear.weight + mask * self.linear.weight.detach()), self.linear.bias)
+            x = F.linear(x, 0.5 * (mask.detach() + self.linear.weight + mask + self.linear.weight.detach()), self.linear.bias)
+            return x, mask_loss, budget_loss
 
     def forward_mask(self, x, lang_id):
-        lang_id = self.pair2ind[lang_id]
-        if self.training:
-            u = torch.zeros(self.linear.weight.shape, dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
-            mask = self.sample_and_get_masks(u, lang_id)
-            mask_loss = self.maximize_mask_dis(u, mask, lang_id)
-        else:
-            loga = self.get_mixed_loga(lang_id)
-            mask = F.hardtanh(torch.sigmoid(loga) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
-            # mask_loss = torch.tensor(0).to(x.device)
-            mask_loss =  torch.sum(torch.where(mask > 0, 1, 0)) / (mask.shape[0] * mask.shape[1])
-        return mask, mask_loss
+        if lang_id != -1:
+            lang_id = self.pair2ind[lang_id]
+        mask = self.w1[lang_id] @ self.w2[lang_id]
+        mask_loss = budget_loss = 0
+        return mask, mask_loss, budget_loss
 
     @property
     def weight(self):
@@ -361,14 +532,127 @@ class L0Linear(torch.nn.Module):
     def bias(self):
         return self.linear.bias
 
-# if __name__ == "__main__":
-#     a = L0Linear(10,5,[i for i in range(10)])
-#     b = torch.randn(1,10)
-#     print(a(b, 2))
-#     # print(a(b,2))
-#     # print(a.training, a(b, 2))
 
+class L0Linear2(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        num_langs,
+        num_loga=1,
+        init_mean=0,
+        init_sdev=0.01,
+        init_beta=2/3,
+        zeta=1.1,
+        gamma=-0.1,
+        epsilon=1e-6,
+        linear=None,
+        ):
+        super().__init__()
+        if linear is not None:
+            self.linear = linear
+        else:
+            self.linear = Linear(input_size, output_size)
+        self.zeta = zeta
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+        self.num_loga = int(num_loga)
+        self.num_langs = len(num_langs)
+        self.w1 = torch.nn.Parameter(torch.zeros(len(num_langs) + 1, output_size, self.num_loga).normal_(init_mean, init_sdev))
+        self.w2 = torch.nn.Parameter(torch.zeros(len(num_langs) + 1, self.num_loga, input_size))
 
+    def forward(self, x, lang_id=None):
+        if lang_id == None:
+            x = F.linear(x, self.linear.weight, self.linear.bias)
+            return x
+        else:
+            mask, mask_loss, budget_loss = self.forward_mask(x, lang_id)
+            # x = F.linear(x, 0.5 * (mask.detach() * self.linear.weight + mask * self.linear.weight.detach()), self.linear.bias)
+            x = F.linear(x, mask + self.linear.weight, self.linear.bias)
+            return x, mask_loss, budget_loss
+
+    def forward_mask(self, x, lang_id):
+        if lang_id != -1:
+            src_id, tgt_id = lang_id.split("-")
+            src_id = self.pair2ind[src_id]
+            tgt_id = self.pair2ind[tgt_id]
+        else:
+            src_id = tgt_id = -1
+        mask = self.w1[src_id] @ self.w2[tgt_id]
+        mask_loss = budget_loss = 0
+        return mask, mask_loss, budget_loss
+
+    @property
+    def weight(self):
+        return self.linear.weight
+
+    @property
+    def bias(self):
+        return self.linear.bias
+
+# permute
+# class L0Linear(torch.nn.Module):
+#     def __init__(
+#         self,
+#         input_size,
+#         output_size,
+#         num_langs,
+#         num_loga=1,
+#         init_mean=0,
+#         init_sdev=0.01,
+#         init_beta=2/3,
+#         zeta=1.1,
+#         gamma=-0.1,
+#         epsilon=1e-6,
+#         linear=None,
+#         ):
+#         super().__init__()
+#         if linear is not None:
+#             self.linear = linear
+#         else:
+#             self.linear = Linear(input_size, output_size)
+#         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+#         self.num_langs = len(num_langs)
+
+#         self.shape = self.linear.weight.shape
+#         self.input_size = input_size
+#         self.output_size = output_size
+
+#     def forward(self, x, lang_id=None):
+#         if lang_id == None:
+#             x = F.linear(x, self.linear.weight, self.linear.bias)
+#             return x
+#         else:
+#             row_perm, col_perm, mask_loss, budget_loss = self.forward_mask(x, lang_id)
+
+#             # permute
+#             self.linear.weight.data = self.linear.weight.data[row_perm][:, col_perm]
+#             x = F.linear(x, self.linear.weight, self.linear.bias)
+
+#             # recover
+#             row_perm = torch.argsort(row_perm)
+#             col_perm = torch.argsort(col_perm)
+#             self.linear.weight.data = self.linear.weight.data[row_perm][:, col_perm]
+#             return x, mask_loss, budget_loss
+
+#     def forward_mask(self, x, lang_id):
+#         lang_id = self.pair2ind[lang_id]
+#         with torch.random.fork_rng(devices=[x.device]):
+#             torch.manual_seed(int(lang_id))
+#             row_perm = torch.randperm(self.output_size, device=x.device)
+#             col_perm = torch.randperm(self.input_size, device=x.device)
+#         mask_loss = budget_loss = 0
+#         return row_perm, col_perm, mask_loss, budget_loss
+
+#     @property
+#     def weight(self):
+#         return self.linear.weight
+
+#     @property
+#     def bias(self):
+#         return self.linear.bias
+        
 class L0Adapter(torch.nn.Module):
     def __init__(
         self,
@@ -511,9 +795,11 @@ class L0Layer(torch.nn.Module):
 
         # x, l_aux = self.adapter(x, lang_id)
         # x = self.dropout_module(x)
-        x, mask_loss = self.ffn_fn(x, lang_id)
+        if lang_id == None:
+            lang_id = -1
+        x, mask_loss, budget_loss = self.ffn_fn(x, lang_id=lang_id)
         x = x + residual
-        l_aux = {"lid_loss": mask_loss}
+        l_aux = {"lid_loss": mask_loss, "budget_loss": budget_loss}
         return x, l_aux
 
 class L0DropLayer(torch.nn.Module):
@@ -891,62 +1177,90 @@ class LUAPLUSLayer(torch.nn.Module):
 #         return x, None
 
 
-# v1:
-# class L0Adapter(torch.nn.Module):
+
+
+
+# class L0Linear(torch.nn.Module):
 #     def __init__(
 #         self,
 #         input_size,
-#         bottleneck_size,
+#         output_size,
 #         num_langs,
 #         init_mean=0,
 #         init_sdev=0.01,
 #         init_beta=2/3,
 #         zeta=1.1,
 #         gamma=-0.1,
-#         epsilon=1e-6
+#         epsilon=1e-6,
+#         linear=None,
 #         ):
 #         super().__init__()
-#         self.size = input_size
-#         self.down = Linear(input_size, bottleneck_size)
-#         self.up = Linear(bottleneck_size, input_size)
-#         self.layer_norm = LayerNorm(input_size, elementwise_affine=True)
-#         self.activation_fn = get_activation_fn("relu")
+#         if linear is not None:
+#             self.linear = linear
+#         else:
+#             self.linear = Linear(input_size, output_size)
 #         self.zeta = zeta
 #         self.gamma = gamma
 #         self.epsilon = epsilon
-#         self.down_loga = torch.nn.Parameter(torch.zeros(num_langs, input_size).normal_(init_mean, init_sdev)
-#         )
-#         self.up_loga = torch.nn.Parameter(torch.zeros(num_langs, bottleneck_size).normal_(init_mean, init_sdev)
-#         )
-#         self.down_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
-#         self.up_beta = init_beta #torch.nn.Parameter(torch.zeros(num_langs).fill_(init_beta))
-        
-#     def forward(self, x, lang_id):
-#         shortcut = x
-#         x = self.layer_norm(x)
+#         self.pair2ind = {num_langs[i]: i for i in range(len(num_langs))}
+#         self.num_langs = len(num_langs)
+#         self.loga_row = torch.nn.Parameter(torch.zeros(len(num_langs), input_size).normal_(init_mean, init_sdev))
+#         self.loga_col = torch.nn.Parameter(torch.zeros(len(num_langs), output_size).normal_(init_mean, init_sdev))
 
-#         ## language L0 for down
-#         if self.training:
-#             down_mask = self.sample_and_get_masks(x, lang_id, self.down_loga, self.down_beta)
+#         self.beta = init_beta
+
+#     def forward(self, x, lang_id=None):
+#         if lang_id == None:
+#             x = F.linear(x, self.linear.weight, self.linear.bias)
+#             return x
 #         else:
-#             down_mask = F.hardtanh(torch.sigmoid(self.down_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
-#         x = F.linear(x, down_mask.view(1, -1) * self.down.weight, self.down.bias)
+#             mask, mask_loss = self.forward_mask(x, lang_id)
+#             # x = F.linear(x, 0.5 * (mask.detach() * self.linear.weight + mask * self.linear.weight.detach()), self.linear.bias)
+#             x = F.linear(x, mask * self.linear.weight, self.linear.bias)
+#             return x, mask_loss
 
-#         x = self.activation_fn(x)
-
-#         # language L0 for up
-#         if self.training:
-#             up_mask = self.sample_and_get_masks(x, lang_id, self.up_loga, self.up_beta)
-#         else:
-#             up_mask = F.hardtanh(torch.sigmoid(self.up_loga[lang_id]) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
-#         x = F.linear(x, up_mask.view(1, -1) * self.up.weight, self.up.bias)
-
-#         x = x + shortcut
-#         return x
-
-#     def sample_and_get_masks(self, x, lang_id, loga, beta):
-#         u = torch.zeros(x.shape[-1], dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
-#         s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga[lang_id]) / beta)
+#     def sample_and_get_masks(self, u, lang_id):
+#         loga = self.get_mixed_loga(lang_id)
+#         s = torch.sigmoid((torch.log(u) - torch.log(1-u) + loga) / self.beta)
 #         s = s * (self.zeta - self.gamma) + self.gamma
 #         s = F.hardtanh(s, min_val=0, max_val=1)
 #         return s
+
+#     def get_mixed_loga(self, lang_id):
+#         a = self.loga_row[lang_id, :].view(1, -1)
+#         b = self.loga_col[lang_id, :].view(-1, 1)
+#         # c = a + b
+#         # c = 2 * (a * b) / ((a**2).detach() + (b **2).detach())
+#         return a + b
+
+#     def maximize_mask_dis(self, u, mask, lang_id):
+#         other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         while other_id == lang_id:
+#             other_id = torch.randint(self.num_langs, (1,)).to(mask.device)
+#         other_mask = self.sample_and_get_masks(u, other_id)
+#         # cs_loss = F.cosine_similarity(mask, other_mask, dim=-1)
+#         mask_loss = 1 - F.mse_loss(mask, other_mask)
+#         return mask_loss
+
+
+#     def forward_mask(self, x, lang_id):
+#         lang_id = self.pair2ind[lang_id]
+#         if self.training:
+#             u = torch.zeros(self.linear.weight.shape, dtype=x.dtype, device=x.device).uniform_(self.epsilon, 1-self.epsilon)
+#             mask = self.sample_and_get_masks(u, lang_id)
+#             mask_loss = self.maximize_mask_dis(u, mask, lang_id)
+#         else:
+#             loga = self.get_mixed_loga(lang_id)
+#             mask = F.hardtanh(torch.sigmoid(loga) * (self.zeta - self.gamma) + self.gamma, min_val=0, max_val=1)
+#             # mask_loss = torch.tensor(0).to(x.device)
+#             mask_loss =  0 # torch.sum(torch.where(mask > 0, 1, 0)) / (mask.shape[0] * mask.shape[1])
+#         mask = 1 + mask 
+#         return mask, mask_loss
+
+#     @property
+#     def weight(self):
+#         return self.linear.weight
+
+#     @property
+#     def bias(self):
+#         return self.linear.bias

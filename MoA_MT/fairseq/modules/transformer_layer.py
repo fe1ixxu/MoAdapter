@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, SingleAdapterLayer, LangMoALayer, LUAPLUSLayer, L0Layer, L0DropLayer, L0Linear
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, SingleAdapterLayer, LangMoALayer, LUAPLUSLayer, L0Layer, L0DropLayer, L0Linear, L0Linear2
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
@@ -73,25 +73,24 @@ def _ffnl0(
 ):
     x_shape = x.shape
     x = x.reshape(-1, x.size(-1))
-    mask1, mask_loss1 = fc1.forward_mask(x, lang_id)  
-    if has_fused_bias_gelu and activation_fn == gelu:
-        x = _linear(x, mask1 * fc1.weight)
-        x = fused_bias_gelu(x, fc1.bias)
-    elif activation_fn == relu_squared:
-        x = _linear(x, mask1 * fc1.weight)
-        x = fused_bias_relu_squared(x, fc1.bias)
+    if lang_id != None:
+        x, mask_loss1, budget_loss1 = fc1(x, lang_id) 
     else:
-        x = _linear(x, mask1 * fc1.weight, fc1.bias)
-        x = activation_fn(x)
+        x = fc1(x)
+        mask_loss1 = budget_loss1 = 0 
+    x = activation_fn(x)
     x = activation_dropout_module(x)
     if ffn_ln is not None:
         x = ffn_ln(x)
-    mask2, mask_loss2 = fc2.forward_mask(x, lang_id)  
-    x = _linear(x, mask2 * fc2.weight, fc2.bias)
+    if lang_id != None:
+        x, mask_loss2, budget_loss2 = fc2(x, lang_id)
+    else:
+        x = fc2(x)
+        mask_loss2 = budget_loss2 = 0
     x = x.view(x_shape)
     fc_result = x
     x = dropout_module(x)
-    return x, (mask_loss1 + mask_loss2)/2
+    return x, (mask_loss1 + mask_loss2)/2, (budget_loss1 + budget_loss2) / 2
 
 
 class FeedForwardNetwork(nn.Module):
@@ -186,6 +185,7 @@ class TransformerEncoderLayerBase(nn.Module):
         self.embed_dim = cfg.encoder.embed_dim
         self.quant_noise = cfg.quant_noise.pq
         self.quant_noise_block_size = cfg.quant_noise.pq_block_size
+        self.is_adapter_layer = is_adapter_layer
         self.self_attn = self.build_self_attention(self.embed_dim, cfg)
         self.self_attn_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         self.dropout_module = FairseqDropout(
@@ -196,7 +196,6 @@ class TransformerEncoderLayerBase(nn.Module):
         self.normalize_before = cfg.encoder_normalize_before
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
-        self.is_adapter_layer = is_adapter_layer
         # self.is_adapter_layer = False
         self.prefix_token_positions = (
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
@@ -532,7 +531,7 @@ class TransformerEncoderLayerBase(nn.Module):
                     l0_beta=cfg.l0_beta,
                     loga_num=cfg.loga_num,
                 )
-            elif cfg.moa_type == "l0lang":
+            elif cfg.moa_type == "l0lang" or cfg.moa_type == "l0langsum" or cfg.moa_type == "l0langsumid":
                 self.fc1 = L0Linear(
                     input_size=self.embed_dim,
                     output_size=ffn_dim,
@@ -542,6 +541,41 @@ class TransformerEncoderLayerBase(nn.Module):
                     num_loga=cfg.loga_num,
                 )
                 self.fc2 = L0Linear(
+                    input_size=ffn_dim,
+                    output_size=self.embed_dim,
+                    num_langs=cfg.langs,
+                    linear=self.fc2,
+                    init_beta=cfg.l0_beta,
+                    num_loga=cfg.loga_num,
+                )
+                self.moa_wrapper = L0Layer(
+                    lambda x, lang_id: _ffnl0(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                        lang_id=lang_id
+                    ),
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.langs,
+                    self.dropout_module,
+                    l0_beta=cfg.l0_beta,
+                    loga_num=cfg.loga_num,
+                )
+            elif cfg.moa_type == "l0lang2" or cfg.moa_type == "l0langsum2" or cfg.moa_type == "l0langsumid2":
+                self.fc1 = L0Linear2(
+                    input_size=self.embed_dim,
+                    output_size=ffn_dim,
+                    num_langs=cfg.langs,
+                    linear=self.fc1,
+                    init_beta=cfg.l0_beta,
+                    num_loga=cfg.loga_num,
+                )
+                self.fc2 = L0Linear2(
                     input_size=ffn_dim,
                     output_size=self.embed_dim,
                     num_langs=cfg.langs,
@@ -662,7 +696,7 @@ class TransformerEncoderLayerBase(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             scale_heads=cfg.scale_heads,
             use_fused_softmax=cfg.use_fused_softmax,
-            moa_type=cfg.moa_type,
+            moa_type=cfg.moa_type if self.is_adapter_layer else None,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
             loga_num=cfg.loga_num,
@@ -721,16 +755,18 @@ class TransformerEncoderLayerBase(nn.Module):
             )
         if self.cfg.moa_type in ["lang_moa", "luaplus"]:
             lang_id = src_lang_id - 1
-        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
+        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop", "l0lang2", "l0langsumid2"]:
             src_key = self.lang_dict.symbols[src_lang_id]
             tgt_key = self.lang_dict.symbols[tgt_lang_id]
             lang_id = src_key + "-" + tgt_key
         else:
             lang_id = self.lang_dict.symbols[src_lang_id]
+        if adapter_side != "moa" or not self.is_adapter_layer:
+            lang_id = None
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
-        x, _, attn_mask_loss = self.self_attn(
+        x, _, attn_mask_loss, attn_budget_loss = self.self_attn(
             query=x,
             key=x,
             value=x,
@@ -819,6 +855,7 @@ class TransformerEncoderLayerBase(nn.Module):
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             if attn_mask_loss != 0:
                 l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss * 4) / 6
+                l_aux["budget_loss"] = (l_aux["budget_loss"] * 2 + attn_budget_loss * 4) / 6
         if l_aux == None and attn_mask_loss != 0:
             l_aux = {"lid_loss": attn_mask_loss}
         if not self.normalize_before:
@@ -892,7 +929,8 @@ class TransformerDecoderLayerBase(nn.Module):
 
         self.quant_noise = cfg.quant_noise_pq
         self.quant_noise_block_size = cfg.quant_noise_pq_block_size
-
+        self.is_adapter_layer = is_adapter_layer
+        
         self.cross_self_attention = cfg.cross_self_attention
         self.attn_ln = LayerNorm(self.embed_dim) if cfg.scale_attn else None
 
@@ -945,7 +983,7 @@ class TransformerDecoderLayerBase(nn.Module):
 
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
-        self.is_adapter_layer = is_adapter_layer
+        
         # self.is_adapter_layer = False
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
@@ -1304,7 +1342,7 @@ class TransformerDecoderLayerBase(nn.Module):
                     l0_beta=cfg.l0_beta,
                     loga_num=cfg.loga_num,
                 )
-            elif cfg.moa_type == "l0lang":
+            elif cfg.moa_type == "l0lang" or cfg.moa_type == "l0langsum" or cfg.moa_type == "l0langsumid":
                 self.fc1 = L0Linear(
                     input_size=self.embed_dim,
                     output_size=ffn_dim,
@@ -1331,6 +1369,41 @@ class TransformerDecoderLayerBase(nn.Module):
                         self.dropout_module,
                         ffn_ln=self.ffn_layernorm,
                         lang_id=lang_id,
+                    ),
+                    self.embed_dim,
+                    adapter_hidden_dim,
+                    cfg.langs,
+                    self.dropout_module,
+                    l0_beta=cfg.l0_beta,
+                    loga_num=cfg.loga_num,
+                )
+            elif cfg.moa_type == "l0lang2" or cfg.moa_type == "l0langsum2" or cfg.moa_type == "l0langsumid2":
+                self.fc1 = L0Linear2(
+                    input_size=self.embed_dim,
+                    output_size=ffn_dim,
+                    num_langs=cfg.langs,
+                    linear=self.fc1,
+                    init_beta=cfg.l0_beta,
+                    num_loga=cfg.loga_num,
+                )
+                self.fc2 = L0Linear2(
+                    input_size=ffn_dim,
+                    output_size=self.embed_dim,
+                    num_langs=cfg.langs,
+                    linear=self.fc2,
+                    init_beta=cfg.l0_beta,
+                    num_loga=cfg.loga_num,
+                )
+                self.moa_wrapper = L0Layer(
+                    lambda x, lang_id: _ffnl0(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                        lang_id=lang_id
                     ),
                     self.embed_dim,
                     adapter_hidden_dim,
@@ -1409,7 +1482,7 @@ class TransformerDecoderLayerBase(nn.Module):
             use_fused_softmax=cfg.use_fused_softmax,
             scale_heads=cfg.scale_heads_inside,
             init_model_on_gpu=cfg.init_model_on_gpu,
-            moa_type=cfg.moa_type,
+            moa_type=cfg.moa_type if self.is_adapter_layer else None,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
             loga_num=cfg.loga_num,
@@ -1427,7 +1500,7 @@ class TransformerDecoderLayerBase(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             use_fused_softmax=cfg.use_fused_softmax,
             init_model_on_gpu=cfg.init_model_on_gpu,
-            moa_type=cfg.moa_type,
+            moa_type=cfg.moa_type if self.is_adapter_layer else None,
             num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
             init_beta=cfg.l0_beta,
             loga_num=cfg.loga_num,
@@ -1518,14 +1591,17 @@ class TransformerDecoderLayerBase(nn.Module):
 
         if self.cfg.moa_type in ["lang_moa", "luaplus"]:
             lang_id = tgt_lang_id - 1
-        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop", "l0"]:
+        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop", "l0", "l0lang2", "l0langsumid2"]:
             src_key = self.lang_dict.symbols[src_lang_id]
             tgt_key = self.lang_dict.symbols[tgt_lang_id]
             lang_id = src_key + "-" + tgt_key
         else:
             lang_id = self.lang_dict.symbols[tgt_lang_id]
 
-        x, attn, attn_mask_loss1 = self.self_attn(
+        if adapter_side != "moa" or not self.is_adapter_layer:
+            lang_id = None
+            
+        x, attn, attn_mask_loss1, attn_budget_loss1 = self.self_attn(
             query=x,
             key=y,
             value=y,
@@ -1563,7 +1639,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            x, attn, attn_mask_loss2 = self.encoder_attn(
+            x, attn, attn_mask_loss2, attn_budget_loss2 = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -1649,6 +1725,7 @@ class TransformerDecoderLayerBase(nn.Module):
 
             if attn_mask_loss1 != 0:
                 l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss1 * 4 + attn_mask_loss2 * 4) / 10
+                l_aux["budget_loss"] = (l_aux["budget_loss"] * 2 + attn_budget_loss1 * 4 + attn_budget_loss2 * 4) / 10 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
         if l_aux == None and attn_mask_loss1 != 0:
             l_aux =  {"lid_loss": 0.5 * (attn_mask_loss1 + attn_mask_loss2)}

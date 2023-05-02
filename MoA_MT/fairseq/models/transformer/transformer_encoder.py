@@ -107,7 +107,7 @@ class TransformerEncoderBase(FairseqEncoder):
             is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
             is_adapter_layer = adapter_freq !=0 and (i + 1) % adapter_freq == 0
             if cfg.moa_detail_assign != "":
-                is_moa_layer = bool(int(moa_detail_assign[i]))
+                is_adapter_layer = bool(int(moa_detail_assign[i]))
             self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer))
         self.num_layers = len(self.layers)
 
@@ -264,7 +264,7 @@ class TransformerEncoderBase(FairseqEncoder):
             results["encoder_states"].append(x)
 
         # encoder layers
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss", "budget_loss"]
         for key in loss_keys:
             results[key] = []
         for layer in self.layers:

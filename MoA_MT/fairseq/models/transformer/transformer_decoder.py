@@ -149,7 +149,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
             is_adapter_layer = adapter_freq != 0 and (i + 1) % adapter_freq == 0
             if cfg.moa_detail_assign != "":
-                is_moa_layer = bool(int(moa_detail_assign[i]))
+                is_adapter_layer = bool(int(moa_detail_assign[i]))
             self.layers.append(
                 self.build_decoder_layer(
                     cfg, no_encoder_attn=no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer,
@@ -503,7 +503,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         results: Dict[str, Optional[Tensor]] = {"inner_states": [x]}
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss", "budget_loss"]
         for key in loss_keys:
             results[key] = []
             if encoder_out is not None and key in encoder_out:

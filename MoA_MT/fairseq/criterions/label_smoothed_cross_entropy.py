@@ -26,7 +26,7 @@ class LabelSmoothedCrossEntropyCriterionConfig(FairseqDataclass):
         default=1,
         metadata={"help": "weight for lid loss"},
     )
-    var_weight: float = field(
+    budget_weight: float = field(
         default=1,
         metadata={"help": "weight for var loss"},
     )
@@ -73,7 +73,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         ignore_prefix_size=0,
         report_accuracy=False,
         lid_weight=0.1,
-        var_weight=0.1,
+        budget_weight=0.1,
     ):
         super().__init__(task)
         self.sentence_avg = sentence_avg
@@ -81,7 +81,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         self.ignore_prefix_size = ignore_prefix_size
         self.report_accuracy = report_accuracy
         self.lid_weight = lid_weight
-        self.var_weight = var_weight
+        self.budget_weight = budget_weight
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -92,7 +92,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample["net_input"])
-        loss, nll_loss, lid_loss, var_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss, lid_loss, budget_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
         )
@@ -100,7 +100,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             "loss": loss.data,
             "nll_loss": nll_loss.data,
             "lid_loss": lid_loss.data * sample_size,
-            "var_loss": var_loss.data * sample_size * 10,
+            "budget_loss": budget_loss.data * sample_size,
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
@@ -141,18 +141,18 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         if lid_count > 0:
             lid_loss = lid_loss / lid_count
 
-        var_loss = torch.zeros_like(loss, dtype=torch.float32)
-        var_count = 0
-        for l_var_loss in net_output[1]["var_loss"]:
-            if l_var_loss is not None:
-                var_loss += l_var_loss
-                var_count += 1
-        if var_count > 0:
-            var_loss = var_loss / var_count
+        budget_loss = torch.zeros_like(loss, dtype=torch.float32)
+        budget_count = 0
+        for l_budget_loss in net_output[1]["budget_loss"]:
+            if l_budget_loss is not None:
+                budget_loss += l_budget_loss
+                budget_count += 1
+        if budget_count > 0:
+            budget_loss = budget_loss / budget_count
 
         if model.training:
-            loss = loss + self.lid_weight * lid_loss + self.var_weight * var_loss 
-        return loss, nll_loss, lid_loss, var_loss
+            loss = loss + self.lid_weight * lid_loss + self.budget_weight * budget_loss 
+        return loss, nll_loss, lid_loss, budget_loss
 
     def compute_accuracy(self, model, net_output, sample):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
@@ -170,7 +170,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         nll_loss_sum = sum(log.get("nll_loss", 0) for log in logging_outputs)
         ad_loss_sum = sum(log.get("ad_loss", 0) for log in logging_outputs)
         lid_loss_sum = sum(log.get("lid_loss", 0) for log in logging_outputs)
-        var_loss_sum = sum(log.get("var_loss", 0) for log in logging_outputs)
+        budget_loss_sum = sum(log.get("budget_loss", 0) for log in logging_outputs)
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
 
@@ -190,7 +190,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             "lid_loss", lid_loss_sum / sample_size, sample_size, round=3
         )
         metrics.log_scalar(
-            "var_loss", var_loss_sum / sample_size, sample_size, round=3
+            "budget_loss", budget_loss_sum / sample_size, sample_size, round=3
         )
 
         total = utils.item(sum(log.get("total", 0) for log in logging_outputs))
