@@ -960,26 +960,21 @@ class LUALayer(torch.nn.Module):
         self,
         ffn_fn: Callable,
         model_dim: int,
-        bottleneck_size1: int,
-        bottleneck_size2: int,
+        bottleneck_size: int,
         num_langs: List,
         dropout_module,
     ) -> None:
         super().__init__()
         self.ffn_fn = ffn_fn
         # self.layer_norm = LayerNorm(model_dim, elementwise_affine=True)
-        self.adapter = NaiveAdapter(
-            model_dim,
-            bottleneck_size1,
-            )
-        self.bottleneck_size2 = bottleneck_size2
+        self.bottleneck_size = bottleneck_size
         self.dropout_module = dropout_module
-        if bottleneck_size2 > 0:
+        if bottleneck_size > 0:
             self.lang_adapters=torch.nn.ModuleDict([])
             for lang in num_langs:
                 self.lang_adapters[lang]= NaiveAdapter(
                     model_dim,
-                    bottleneck_size2,
+                    bottleneck_size,
                     )
     def forward(
         self,
@@ -990,19 +985,15 @@ class LUALayer(torch.nn.Module):
         side=None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        # assert len(x) == 1, "only single input Tensor supported"
         residual = residual.transpose(0,1)
-        # x = self.ffn_fn(*x)
-        # x = x + residual
         if side == "moa" or (not self.training):
-            x = self.adapter(x)
-            # x = self.lang_adapters[lang_id](x)
+            x = self.ffn_fn(x)
         else:
-            if self.bottleneck_size2 > 0:
+            if self.bottleneck_size > 0:
                 x = self.lang_adapters[lang_id](x)
             else:
-                x = self.adapter(x)
-        x = self.dropout_module(x)
+                x = self.ffn_fn(x)
+            x = self.dropout_module(x)
         x = x + residual
 
         return x, None

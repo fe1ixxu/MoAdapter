@@ -428,8 +428,7 @@ class TransformerEncoderLayerBase(nn.Module):
                         ffn_ln=self.ffn_layernorm,
                     )[0],
                     self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_adapter_bottle_neck,
+                    ffn_dim,
                     cfg.langs,
                     self.dropout_module
                 )
@@ -761,7 +760,7 @@ class TransformerEncoderLayerBase(nn.Module):
             lang_id = src_key + "-" + tgt_key
         else:
             lang_id = self.lang_dict.symbols[src_lang_id]
-        if adapter_side != "moa" or not self.is_adapter_layer:
+        if (adapter_side != "moa" or not self.is_adapter_layer) and self.cfg.moa_type != "lua":
             lang_id = None
         residual = x
         if self.normalize_before:
@@ -1239,8 +1238,7 @@ class TransformerDecoderLayerBase(nn.Module):
                         ffn_ln=self.ffn_layernorm,
                     )[0],
                     self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_adapter_bottle_neck,
+                    ffn_dim,
                     cfg.langs,
                     self.dropout_module
                 )
@@ -1598,7 +1596,7 @@ class TransformerDecoderLayerBase(nn.Module):
         else:
             lang_id = self.lang_dict.symbols[tgt_lang_id]
 
-        if adapter_side != "moa" or not self.is_adapter_layer:
+        if (adapter_side != "moa" or not self.is_adapter_layer) and self.cfg.moa_type != "lua":
             lang_id = None
             
         x, attn, attn_mask_loss1, attn_budget_loss1 = self.self_attn(

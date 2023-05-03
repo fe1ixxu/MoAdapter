@@ -380,6 +380,10 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         if model.cfg.moa_type == "l0langsum":
             loss = sum(losses)/len(losses)
             ad_loss = torch.zeros_like(loss)
+        elif model.cfg.moa_type == "lua":
+            pad_mask = sample["target"].eq(criterion.padding_idx)
+            ad_loss = KL_loss(logits[0], logits[1], pad_mask)
+            loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
         else:
             pad_mask = sample["target"].eq(criterion.padding_idx)
             # ad_loss = X_loss(logits, pad_mask)
