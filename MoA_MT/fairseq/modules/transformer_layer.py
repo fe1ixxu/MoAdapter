@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, SingleAdapterLayer, LangMoALayer, LUAPLUSLayer, L0Layer, L0DropLayer, L0Linear, L0Linear2
+from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, LUALayer2, SingleAdapterLayer, LangMoALayer, LUAPLUSLayer, L0Layer, L0DropLayer, L0Linear, L0Linear2
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
@@ -418,6 +418,22 @@ class TransformerEncoderLayerBase(nn.Module):
                 )
             elif cfg.moa_type == "lua":
                 self.moa_wrapper = LUALayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    ffn_dim,
+                    cfg.langs,
+                    self.dropout_module
+                )
+            elif cfg.moa_type == "lua2":
+                self.moa_wrapper = LUALayer2(
                     lambda x: _ffn(
                         x,
                         self.fc1,
@@ -1228,6 +1244,22 @@ class TransformerDecoderLayerBase(nn.Module):
                 )
             elif cfg.moa_type == "lua":
                 self.moa_wrapper = LUALayer(
+                    lambda x: _ffn(
+                        x,
+                        self.fc1,
+                        self.activation_fn,
+                        self.activation_dropout_module,
+                        self.fc2,
+                        self.dropout_module,
+                        ffn_ln=self.ffn_layernorm,
+                    )[0],
+                    self.embed_dim,
+                    ffn_dim,
+                    cfg.langs,
+                    self.dropout_module
+                )
+            elif cfg.moa_type == "lua2":
+                self.moa_wrapper = LUALayer2(
                     lambda x: _ffn(
                         x,
                         self.fc1,

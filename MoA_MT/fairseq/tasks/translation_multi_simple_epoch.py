@@ -30,6 +30,7 @@ from fairseq.data.multilingual.sampling_method import SamplingMethod
 from fairseq.tasks import LegacyFairseqTask, register_task
 from fairseq.utils import FileContentsAction
 from fairseq.optim.amp_optimizer import AMPOptimizer
+from collections import defaultdict
 
 
 ###
@@ -75,6 +76,7 @@ def symmetric_KL_loss(p, q, pad_mask):
 def KL_loss(p, q, pad_mask):
     """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
     p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
+    q = q.detach()
     dict_size = q.size(-1)
     non_pad_mask = ~pad_mask
     p = p.view(-1, dict_size)[non_pad_mask]
@@ -152,6 +154,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         self.langs = langs
         self.dicts = dicts
         self.training = training
+        self.gradients = defaultdict(lambda: [0,0])
         if training:
             self.lang_pairs = args.lang_pairs
         else:
@@ -498,6 +501,42 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
+
+
+        # name_type = "lua"
+        # lg = "pl" # ar,de,es,fa,he,it,nl,pl
+        # if self.gradients["fc1_0"][1] < 50:
+        #     print(self.gradients["fc1_0"][1], self.gradients["fc2_0"][1])
+        #     for name, params in model.named_parameters():
+        #         for i in range(6):
+        #             if f"encoder.layers.{i}.fc1.weight" in name:
+        #                 grad = params.grad.clone().detach().float()
+        #                 params = params.clone().detach().float()
+        #                 grad = torch.abs(grad*params).to("cpu")
+        #                 self.gradients[f"fc1_{i}"][0] = (self.gradients[f"fc1_{i}"][0] * self.gradients[f"fc1_{i}"][1] + grad) / (self.gradients[f"fc1_{i}"][1] + 1)
+        #                 self.gradients[f"fc1_{i}"][1] += 1
+        #                 # score = torch.abs(grad*params).to("cpu")
+        #                 # torch.save(grad, f"analysis_weights/gradient_decoder_{name_type}_{lg}_{i}_fc1")
+        #                 # torch.save(params, f"analysis_weights/params_encoder_{name_type}_{lg}_{i}_fc1")
+
+        #             if f"encoder.layers.{i}.fc2.weight" in name:
+        #                 grad = params.grad.clone().detach().float()
+        #                 params = params.clone().detach().float()
+        #                 grad = torch.abs(grad*params).to("cpu")
+        #                 self.gradients[f"fc2_{i}"][0] = (self.gradients[f"fc2_{i}"][0] * self.gradients[f"fc2_{i}"][1] + grad) / (self.gradients[f"fc2_{i}"][1] + 1)
+        #                 self.gradients[f"fc2_{i}"][1] += 1
+        #                 # 
+        #                 # torch.save(grad, f"analysis_weights/gradient_decoder_{name_type}_{lg}_{i}_fc2")
+        #                 # torch.save(params, f"analysis_weights/params_encoder_{name_type}_{lg}_{i}_fc2")
+        # else:
+        #     for i in range(6):
+        #         torch.save(self.gradients[f"fc1_{i}"][0], f"analysis_weights/encoder_{name_type}_{lg}_{i}_fc1")
+        #         torch.save(self.gradients[f"fc2_{i}"][0], f"analysis_weights/encoder_{name_type}_{lg}_{i}_fc2")
+        #     print(lg)
+        #     exit(0)
+
+
+
         if self.eval_bleu:
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output["_bleu_sys_len"] = bleu.sys_len
