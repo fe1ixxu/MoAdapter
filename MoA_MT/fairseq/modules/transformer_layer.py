@@ -23,7 +23,7 @@ from fairseq.modules.fused_bias_gelu import (
 from fairseq.modules.fused_bias_relu_squared import fused_bias_relu_squared
 from fairseq.modules.linear import Linear
 from fairseq.modules.moe import CMRLayer, MOELayer, Top1Gate, Top2Gate
-from fairseq.modules.moa import MOALayer, MOATop1Gate, MOATop2Gate, CLSALayer, ParallelMoALayer, SeqMoALayer, ADMoALayer, SeqNaiveLayer, LUALayer, LUALayer2, SingleAdapterLayer, LangMoALayer, LUAPLUSLayer, L0Layer, L0DropLayer, L0Linear, L0Linear2
+from fairseq.modules.language_specific_matrix_synthesis import LMSLinear
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.utils import relu_squared
 from fairseq.data.multilingual.multilingual_data_manager import MultilingualDatasetManager
@@ -61,7 +61,7 @@ def _ffn(
     x = dropout_module(x)
     return x, fc_result
 
-def _ffnl0(
+def _lmsffn(
     x,
     fc1,
     activation_fn,
@@ -73,24 +73,16 @@ def _ffnl0(
 ):
     x_shape = x.shape
     x = x.reshape(-1, x.size(-1))
-    if lang_id != None:
-        x, mask_loss1, budget_loss1 = fc1(x, lang_id) 
-    else:
-        x = fc1(x)
-        mask_loss1 = budget_loss1 = 0 
+    x = fc1(x, lang_id) 
     x = activation_fn(x)
     x = activation_dropout_module(x)
     if ffn_ln is not None:
         x = ffn_ln(x)
-    if lang_id != None:
-        x, mask_loss2, budget_loss2 = fc2(x, lang_id)
-    else:
-        x = fc2(x)
-        mask_loss2 = budget_loss2 = 0
+    x = fc2(x, lang_id)
     x = x.view(x_shape)
     fc_result = x
     x = dropout_module(x)
-    return x, (mask_loss1 + mask_loss2)/2, (budget_loss1 + budget_loss2) / 2
+    return x
 
 
 class FeedForwardNetwork(nn.Module):
@@ -178,14 +170,16 @@ class TransformerEncoderLayerBase(nn.Module):
         args (argparse.Namespace): parsed command-line arguments
     """
 
-    def __init__(self, cfg, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
+    def __init__(self, cfg, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_lms_layer=False):
         super().__init__()
         self.cfg = cfg
         self.return_fc = return_fc
         self.embed_dim = cfg.encoder.embed_dim
         self.quant_noise = cfg.quant_noise.pq
         self.quant_noise_block_size = cfg.quant_noise.pq_block_size
-        self.is_adapter_layer = is_adapter_layer
+        self.is_lms_layer = is_lms_layer
+        self.lms_ffn = cfg.lms_ffn and is_lms_layer
+        self.lms_att = cfg.lms_att and is_lms_layer
         self.self_attn = self.build_self_attention(self.embed_dim, cfg)
         self.self_attn_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         self.dropout_module = FairseqDropout(
@@ -196,12 +190,10 @@ class TransformerEncoderLayerBase(nn.Module):
         self.normalize_before = cfg.encoder_normalize_before
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
-        # self.is_adapter_layer = False
         self.prefix_token_positions = (
             [0] if cfg.encoder_langtok in ["src", "tgt"] else None
         )
         ffn_dim = cfg.encoder.ffn_embed_dim
-        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffn_dim
         self.attn_ln = LayerNorm(self.embed_dim) if cfg.scale_attn else None
         self.ffn_layernorm = LayerNorm(ffn_dim) if cfg.scale_fc else None
         if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_ffn_embed_dim > 0:
@@ -284,356 +276,25 @@ class TransformerEncoderLayerBase(nn.Module):
                     lang_idx=lang_idx,
                 )
         self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
-        if build_moa:
-            lang_idx = None
-            if cfg.moa_top1_expert:
-                gate = MOATop1Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    use_fp32=cfg.moa_gating_use_fp32,
-                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
-                    use_tutel=cfg.use_tutel_moa,
-                    method=cfg.moa_gate_method,
-                    num_langs=len(cfg.langs),
-                )
-            else:
-                gate = MOATop2Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    cfg.moa_gating_use_fp32,
-                    cfg.moa_second_expert_policy,
-                    cfg.moa_normalize_gate_prob_before_dropping,
-                    cfg.moa_eval_capacity_token_fraction,
-                    cfg.moa_batch_prioritized_routing,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=cfg.init_model_on_gpu,
-                    analyse_moa_gating=cfg.analyse_moa_gating,
-                    method=cfg.moa_gate_method,
-                    num_langs=len(cfg.langs),
-                )
-            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
-            self.moa_layer = MOALayer(
-                gate,
-                adapters,
-                cfg,
-                max_positions=cfg.max_source_positions,
-                tok_dropout=cfg.moa_eom,
-                moa_local_drop=cfg.moa_local_drop,
-            )
-            if cfg.moa_type == "clsa":
-                self.moa_wrapper = CLSALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    cfg.cmr_gate_drop,
-                    lang_idx=lang_idx,
-                )
-            elif cfg.moa_type == "para":
-                self.moa_wrapper = ParallelMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                )
-            elif cfg.moa_type == "seq":
-                self.moa_wrapper = SeqMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                )
-            elif cfg.moa_type == "ad":
-                self.moa_wrapper = ADMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    cfg.lang_adapter_bottle_neck,
-                    cfg.langs,
-                )
-            else:
-                ValueError("No such MoA type")
 
-        if self.is_adapter_layer:
-            if cfg.moa_type == "seq_naive":
-                self.moa_wrapper = SeqNaiveLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "seq_naive_pair":
-                self.moa_wrapper = SeqNaiveLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua":
-                self.moa_wrapper = LUALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    ffn_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua2":
-                self.moa_wrapper = LUALayer2(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    ffn_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua_pair":
-                self.moa_wrapper = LUALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_adapter_bottle_neck,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module,
-                )
-            elif cfg.moa_type == "luaplus":
-                self.moa_wrapper = LUAPLUSLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    len(cfg.langs),
-                )
-            elif cfg.moa_type == "single":
-                self.moa_wrapper = SingleAdapterLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    self.dropout_module,
-                )
-            elif cfg.moa_type == "lang_moa":
-                self.moa_wrapper = LangMoALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.adapter_num,
-                    len(cfg.langs),
-                )
-            elif cfg.moa_type == "l0":
-                self.fc1 = L0Linear(
+        if self.lms_ffn:
+            self.fc1 = LMSLinear(
                     input_size=self.embed_dim,
                     output_size=ffn_dim,
-                    num_langs=cfg.lang_pairs.split(","),
+                    langlist=cfg.langs,
+                    rank=cfg.lms_rank,
                     linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
+                    lms_type=cfg.lms_type,
                 )
-                self.fc2 = L0Linear(
+            self.fc2 = LMSLinear(
                     input_size=ffn_dim,
                     output_size=self.embed_dim,
-                    num_langs=cfg.lang_pairs.split(","),
+                    langlist=cfg.langs,
+                    rank=cfg.lms_rank,
                     linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
+                    lms_type=cfg.lms_type,
                 )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id,
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0lang" or cfg.moa_type == "l0langsum" or cfg.moa_type == "l0langsumid":
-                self.fc1 = L0Linear(
-                    input_size=self.embed_dim,
-                    output_size=ffn_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.fc2 = L0Linear(
-                    input_size=ffn_dim,
-                    output_size=self.embed_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0lang2" or cfg.moa_type == "l0langsum2" or cfg.moa_type == "l0langsumid2":
-                self.fc1 = L0Linear2(
-                    input_size=self.embed_dim,
-                    output_size=ffn_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.fc2 = L0Linear2(
-                    input_size=ffn_dim,
-                    output_size=self.embed_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0drop":
-                self.moa_wrapper = L0DropLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                )
-            else:
-                ValueError("No such Adapter type")
-
+            
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
 
     def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
@@ -711,10 +372,10 @@ class TransformerEncoderLayerBase(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             scale_heads=cfg.scale_heads,
             use_fused_softmax=cfg.use_fused_softmax,
-            moa_type=cfg.moa_type if self.is_adapter_layer else None,
-            num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
-            init_beta=cfg.l0_beta,
-            loga_num=cfg.loga_num,
+            moa_type=cfg.moa_type,
+            langlist=cfg.langs,
+            lms_type=cfg.lms_type if self.lms_att else None,
+            lms_rank=cfg.lms_rank,
         )
 
     def residual_connection(self, x, residual):
@@ -742,7 +403,7 @@ class TransformerEncoderLayerBase(nn.Module):
         tokens: Optional[Tensor] = None,
         src_lang_id:  Optional[Tensor] = None,
         tgt_lang_id: Optional[Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
         """
         Args:
@@ -768,20 +429,19 @@ class TransformerEncoderLayerBase(nn.Module):
             attn_mask = attn_mask.masked_fill(
                 attn_mask.to(torch.bool), -1e8 if x.dtype == torch.float32 else -1e4
             )
-        if self.cfg.moa_type in ["lang_moa", "luaplus"]:
-            lang_id = src_lang_id - 1
-        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop", "l0lang2", "l0langsumid2"]:
+        if "pair" in self.cfg.lms_type:
             src_key = self.lang_dict.symbols[src_lang_id]
             tgt_key = self.lang_dict.symbols[tgt_lang_id]
             lang_id = src_key + "-" + tgt_key
         else:
             lang_id = self.lang_dict.symbols[src_lang_id]
-        if (adapter_side != "moa" or not self.is_adapter_layer) and self.cfg.moa_type != "lua":
-            lang_id = None
+
+        if forward_side != "ls" or not self.is_lms_layer:
+            lang_id = "shared"
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
-        x, _, attn_mask_loss, attn_budget_loss = self.self_attn(
+        x, _, = self.self_attn(
             query=x,
             key=x,
             value=x,
@@ -789,7 +449,7 @@ class TransformerEncoderLayerBase(nn.Module):
             need_weights=False,
             attn_mask=attn_mask,
             lang_id=lang_id,
-            adapter_side=adapter_side,
+            forward_side=forward_side,
         )
         if self.attn_ln is not None:
             x = self.attn_ln(x)
@@ -804,7 +464,7 @@ class TransformerEncoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
 
-        if not run_moe and not run_moa and not self.is_adapter_layer:
+        if not run_moe and not run_moa and not self.lms_ffn:
             x, fc_result = _ffn(
                 x,
                 self.fc1,
@@ -850,29 +510,20 @@ class TransformerEncoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             x = self.residual_connection(x, residual)
-        elif run_moa or self.is_adapter_layer:
-            # x - seq_len, batch_size, model_dim
-            x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
-            prefix_tokens = (
-                tokens[:, self.prefix_token_positions]
-                if tokens is not None and self.prefix_token_positions is not None
-                else None
-            )
-
-            x, l_aux = self.moa_wrapper(
+        elif self.lms_ffn:
+            x = _lmsffn(
                 x,
-                residual=residual,
-                prefix_tokens=prefix_tokens,
-                source="encoder",
+                self.fc1,
+                self.activation_fn,
+                self.activation_dropout_module,
+                self.fc2,
+                self.dropout_module,
+                ffn_ln=self.ffn_layernorm,
                 lang_id=lang_id,
-                side=adapter_side,
-                )
-            x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
-            if attn_mask_loss != 0:
-                l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss * 4) / 6
-                l_aux["budget_loss"] = (l_aux["budget_loss"] * 2 + attn_budget_loss * 4) / 6
-        if l_aux == None and attn_mask_loss != 0:
-            l_aux = {"lid_loss": attn_mask_loss}
+            )
+            l_aux = None
+            fc_result = None
+            x = self.residual_connection(x, residual)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
@@ -883,7 +534,7 @@ class TransformerEncoderLayerBase(nn.Module):
 
 # backward compatible with the legacy argparse format
 class TransformerEncoderLayer(TransformerEncoderLayerBase):
-    def __init__(self, args, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
+    def __init__(self, args, return_fc=False, is_moe_layer=False, is_moa_layer=False, is_lms_layer=False):
         from fairseq.models.transformer import TransformerConfig
 
         super().__init__(
@@ -891,7 +542,7 @@ class TransformerEncoderLayer(TransformerEncoderLayerBase):
             return_fc=return_fc,
             is_moe_layer=is_moe_layer,
             is_moa_layer=is_moa_layer,
-            is_adapter_layer=is_adapter_layer
+            is_lms_layer=is_lms_layer
         )
         self.args = args
 
@@ -928,7 +579,7 @@ class TransformerDecoderLayerBase(nn.Module):
         add_zero_attn=False,
         is_moe_layer=False,
         is_moa_layer=False,
-        is_adapter_layer=False,
+        is_lms_layer=False,
     ):
         super().__init__()
         self.cfg = cfg
@@ -944,7 +595,9 @@ class TransformerDecoderLayerBase(nn.Module):
 
         self.quant_noise = cfg.quant_noise_pq
         self.quant_noise_block_size = cfg.quant_noise_pq_block_size
-        self.is_adapter_layer = is_adapter_layer
+        self.is_lms_layer = is_lms_layer
+        self.lms_ffn = cfg.lms_ffn and is_lms_layer
+        self.lms_att = cfg.lms_att and is_lms_layer
         
         self.cross_self_attention = cfg.cross_self_attention
         self.attn_ln = LayerNorm(self.embed_dim) if cfg.scale_attn else None
@@ -998,12 +651,9 @@ class TransformerDecoderLayerBase(nn.Module):
 
         self.is_moe_layer = is_moe_layer
         self.is_moa_layer = is_moa_layer
-        
-        # self.is_adapter_layer = False
         self.prefix_token_positions = [1] if cfg.decoder_langtok else None
 
         ffn_dim = cfg.decoder.ffn_embed_dim
-        adapter_hidden_dim = cfg.adapter_hidden_dim if cfg.adapter_hidden_dim else ffn_dim
         if (self.is_moe_layer or self.is_moa_layer) and cfg.alternate_decoder_ffn_embed_dim > 0:
             ffn_dim = cfg.alternate_decoder_ffn_embed_dim
 
@@ -1107,358 +757,23 @@ class TransformerDecoderLayerBase(nn.Module):
                     lang_idx=lang_idx,
                 )
         self.lang_dict = MultilingualDatasetManager.create_lang_dictionary(self.cfg.langs)
-        if build_moa:
-            lang_idx = None
-            if cfg.cmr_log_lang_gates:
-                lang_idx = getattr(cfg, "lang_idx")
-                assert lang_idx is not None, cfg
-            if cfg.moa_top1_expert:
-                gate = MOATop1Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    use_fp32=cfg.moa_gating_use_fp32,
-                    moa_eval_capacity_token_fraction=cfg.moa_eval_capacity_token_fraction,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=init_model_on_gpu,
-                    method=cfg.moa_gate_method,
-                    num_langs=len(cfg.langs),
-                )
-            else:
-                gate = MOATop2Gate(
-                    self.embed_dim,
-                    cfg.moa_expert_count,
-                    cfg.moa_gating_use_fp32,
-                    cfg.moa_second_expert_policy,
-                    cfg.moa_normalize_gate_prob_before_dropping,
-                    cfg.moa_eval_capacity_token_fraction,
-                    cfg.moa_batch_prioritized_routing,
-                    use_tutel=cfg.use_tutel_moa,
-                    init_model_on_gpu=init_model_on_gpu,
-                    analyse_moa_gating=cfg.analyse_moa_gating,
-                    method=cfg.moa_gate_method,
-                    num_langs=len(cfg.langs),
-                )
-            adapters = make_adapters(cfg, self.embed_dim, adapter_hidden_dim, self.dropout_module)
-            self.moa_layer = MOALayer(
-                gate,
-                adapters,
-                cfg,
-                max_positions=cfg.max_target_positions,
-                tok_dropout=cfg.moa_eom,
-                moa_local_drop=cfg.moa_local_drop,
-            )
-            if cfg.moa_type == "clsa":
-                self.moa_wrapper = CLSALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    cfg.cmr_gate_drop,
-                    lang_idx=lang_idx,
-                )
-            elif cfg.moa_type == "para":
-                self.moa_wrapper = ParallelMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                )
-            elif cfg.moa_type == "seq":
-                self.moa_wrapper = SeqMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                )
-            elif cfg.moa_type == "ad":
-                self.moa_wrapper = ADMoALayer(
-                    self.moa_layer,
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    cfg.lang_adapter_bottle_neck,
-                    cfg.langs,
-                )
-            else:
-                ValueError("No such MoA type")
-        if self.is_adapter_layer:
-            if cfg.moa_type == "seq_naive":
-                self.moa_wrapper = SeqNaiveLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "seq_naive_pair":
-                self.moa_wrapper = SeqNaiveLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua":
-                self.moa_wrapper = LUALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    ffn_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua2":
-                self.moa_wrapper = LUALayer2(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    ffn_dim,
-                    cfg.langs,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lua_pair":
-                self.moa_wrapper = LUALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_adapter_bottle_neck,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "luaplus":
-                self.moa_wrapper = LUAPLUSLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    len(cfg.langs),
-                )
-            elif cfg.moa_type == "single":
-                self.moa_wrapper = SingleAdapterLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    self.dropout_module
-                )
-            elif cfg.moa_type == "lang_moa":
-                self.moa_wrapper = LangMoALayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.adapter_num,
-                    len(cfg.langs),
-                )
-            elif cfg.moa_type == "l0":
-                self.fc1 = L0Linear(
+        if self.lms_ffn:
+            self.fc1 = LMSLinear(
                     input_size=self.embed_dim,
                     output_size=ffn_dim,
-                    num_langs=cfg.lang_pairs.split(","),
+                    langlist=cfg.langs,
+                    rank=cfg.lms_rank,
                     linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
+                    lms_type=cfg.lms_type,
                 )
-                self.fc2 = L0Linear(
+            self.fc2 = LMSLinear(
                     input_size=ffn_dim,
                     output_size=self.embed_dim,
-                    num_langs=cfg.lang_pairs.split(","),
+                    langlist=cfg.langs,
+                    rank=cfg.lms_rank,
                     linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
+                    lms_type=cfg.lms_type,
                 )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id,
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0lang" or cfg.moa_type == "l0langsum" or cfg.moa_type == "l0langsumid":
-                self.fc1 = L0Linear(
-                    input_size=self.embed_dim,
-                    output_size=ffn_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.fc2 = L0Linear(
-                    input_size=ffn_dim,
-                    output_size=self.embed_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id,
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0lang2" or cfg.moa_type == "l0langsum2" or cfg.moa_type == "l0langsumid2":
-                self.fc1 = L0Linear2(
-                    input_size=self.embed_dim,
-                    output_size=ffn_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc1,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.fc2 = L0Linear2(
-                    input_size=ffn_dim,
-                    output_size=self.embed_dim,
-                    num_langs=cfg.langs,
-                    linear=self.fc2,
-                    init_beta=cfg.l0_beta,
-                    num_loga=cfg.loga_num,
-                )
-                self.moa_wrapper = L0Layer(
-                    lambda x, lang_id: _ffnl0(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                        lang_id=lang_id
-                    ),
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.langs,
-                    self.dropout_module,
-                    l0_beta=cfg.l0_beta,
-                    loga_num=cfg.loga_num,
-                )
-            elif cfg.moa_type == "l0drop":
-                self.moa_wrapper = L0DropLayer(
-                    lambda x: _ffn(
-                        x,
-                        self.fc1,
-                        self.activation_fn,
-                        self.activation_dropout_module,
-                        self.fc2,
-                        self.dropout_module,
-                        ffn_ln=self.ffn_layernorm,
-                    )[0],
-                    self.embed_dim,
-                    adapter_hidden_dim,
-                    cfg.lang_pairs.split(","),
-                )
-            else:
-                assert False, "No such adapter type!"
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         if init_model_on_gpu:
@@ -1512,10 +827,10 @@ class TransformerDecoderLayerBase(nn.Module):
             use_fused_softmax=cfg.use_fused_softmax,
             scale_heads=cfg.scale_heads_inside,
             init_model_on_gpu=cfg.init_model_on_gpu,
-            moa_type=cfg.moa_type if self.is_adapter_layer else None,
-            num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
-            init_beta=cfg.l0_beta,
-            loga_num=cfg.loga_num,
+            moa_type=cfg.moa_type,
+            langlist=cfg.langs,
+            lms_type=cfg.lms_type if self.lms_att else None,
+            lms_rank=cfg.lms_rank,
         )
 
     def build_encoder_attention(self, embed_dim, cfg):
@@ -1530,10 +845,10 @@ class TransformerDecoderLayerBase(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             use_fused_softmax=cfg.use_fused_softmax,
             init_model_on_gpu=cfg.init_model_on_gpu,
-            moa_type=cfg.moa_type if self.is_adapter_layer else None,
-            num_langs=cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
-            init_beta=cfg.l0_beta,
-            loga_num=cfg.loga_num,
+            moa_type=cfg.moa_type,
+            langlist=cfg.langs,
+            lms_type=cfg.lms_type if self.lms_att else None,
+            lms_rank=cfg.lms_rank,
         )
 
     def prepare_for_onnx_export_(self):
@@ -1560,7 +875,7 @@ class TransformerDecoderLayerBase(nn.Module):
         tokens: Optional[Tensor] = None,
         src_lang_id: Optional[Tensor] = None,
         tgt_lang_id: Optional[Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ) -> Tuple[
         Tensor, Tensor, Optional[List[Optional[Tensor]]], Optional[Dict[str, Tensor]]
     ]:
@@ -1619,19 +934,17 @@ class TransformerDecoderLayerBase(nn.Module):
         else:
             y = x
 
-        if self.cfg.moa_type in ["lang_moa", "luaplus"]:
-            lang_id = tgt_lang_id - 1
-        elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0drop", "l0", "l0lang2", "l0langsumid2"]:
+
+        if "pair" in self.cfg.lms_type:
             src_key = self.lang_dict.symbols[src_lang_id]
             tgt_key = self.lang_dict.symbols[tgt_lang_id]
             lang_id = src_key + "-" + tgt_key
         else:
-            lang_id = self.lang_dict.symbols[tgt_lang_id]
+            lang_id = self.lang_dict.symbols[src_lang_id]
+        if forward_side != "ls" or not self.is_lms_layer:
+            lang_id = "shared"
 
-        if (adapter_side != "moa" or not self.is_adapter_layer) and self.cfg.moa_type != "lua":
-            lang_id = None
-            
-        x, attn, attn_mask_loss1, attn_budget_loss1 = self.self_attn(
+        x, attn = self.self_attn(
             query=x,
             key=y,
             value=y,
@@ -1640,7 +953,7 @@ class TransformerDecoderLayerBase(nn.Module):
             need_weights=False,
             attn_mask=self_attn_mask,
             lang_id=lang_id,
-            adapter_side=adapter_side,
+            forward_side=forward_side,
         )
         if self.c_attn is not None:
             tgt_len, bsz = x.size(0), x.size(1)
@@ -1669,7 +982,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            x, attn, attn_mask_loss2, attn_budget_loss2 = self.encoder_attn(
+            x, attn = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -1679,7 +992,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 need_weights=need_attn or (not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
                 lang_id=lang_id,
-                adapter_side=adapter_side,
+                forward_side=forward_side,
             )
             x = self.dropout_module(x)
             x = self.residual_connection(x, residual)
@@ -1692,7 +1005,7 @@ class TransformerDecoderLayerBase(nn.Module):
         run_moe = self.is_moe_layer and self.cfg.alternate_ffn_embed_dim == 0
         run_moa = self.is_moa_layer and self.cfg.alternate_ffn_embed_dim == 0
         
-        if not run_moe and not run_moa and not self.is_adapter_layer:
+        if not run_moe and not run_moa and not self.lms_ffn:
             x, _ = _ffn(
                 x,
                 fc1=self.fc1,
@@ -1737,28 +1050,21 @@ class TransformerDecoderLayerBase(nn.Module):
 
             x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
             x = self.residual_connection(x, residual, alpha=self.alpha2)
-        elif run_moa or self.is_adapter_layer:
-            x = x.transpose(0, 1)  # batch_size, seq_len, model_dim
-            prefix_tokens = (
-                tokens[:, self.prefix_token_positions]
-                if tokens is not None and self.prefix_token_positions is not None
-                else None
-            )
-            x, l_aux = self.moa_wrapper(
+        elif self.lms_ffn:
+            x = _lmsffn(
                 x,
-                residual=residual,
-                prefix_tokens=prefix_tokens,
-                source="decoder",
+                self.fc1,
+                self.activation_fn,
+                self.activation_dropout_module,
+                self.fc2,
+                self.dropout_module,
+                ffn_ln=self.ffn_layernorm,
                 lang_id=lang_id,
-                side=adapter_side,
-                )
+            )
+            l_aux = None
+            fc_result = None
+            x = self.residual_connection(x, residual, alpha=self.alpha2)
 
-            if attn_mask_loss1 != 0:
-                l_aux["lid_loss"] = (l_aux["lid_loss"] * 2 + attn_mask_loss1 * 4 + attn_mask_loss2 * 4) / 10
-                l_aux["budget_loss"] = (l_aux["budget_loss"] * 2 + attn_budget_loss1 * 4 + attn_budget_loss2 * 4) / 10 
-            x = x.transpose(0, 1)  # seq_len, batch_size, model_dim
-        if l_aux == None and attn_mask_loss1 != 0:
-            l_aux =  {"lid_loss": 0.5 * (attn_mask_loss1 + attn_mask_loss2)}
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         if self.onnx_trace and incremental_state is not None:
@@ -1789,7 +1095,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         add_zero_attn=False,
         is_moe_layer=False,
         is_moa_layer=False,
-        is_adapter_layer=False,
+        is_lms_layer=False,
     ):
         from fairseq.models.transformer import TransformerConfig
 
@@ -1800,7 +1106,7 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             add_zero_attn=add_zero_attn,
             is_moe_layer=is_moe_layer,
             is_moa_layer=is_moa_layer,
-            is_adapter_layer=is_adapter_layer,
+            is_lms_layer=is_lms_layer,
         )
         self.args = args
 

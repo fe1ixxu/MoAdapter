@@ -97,18 +97,18 @@ class TransformerEncoderBase(FairseqEncoder):
             self.layers = nn.ModuleList([])
         moe_freq = max(cfg.encoder_moe_freq, cfg.moe_freq)
         moa_freq = cfg.moa_freq
-        adapter_freq = cfg.adapter_freq
-        moa_detail_assign = cfg.moa_detail_assign.split(",") # moa_detail_assign will override moa_freq
-        assert cfg.moa_detail_assign == "" or len(moa_detail_assign) == cfg.encoder_layers, \
-        "Length of moa_detail_assign should be 0 or the same as the number of encoder/decoder layer"
+        lms_freq = cfg.lms_freq
+        lms_detail_assign = cfg.lms_detail_assign.split(",") # lms_detail_assign will override lms_freq
+        assert cfg.lms_detail_assign == "" or len(lms_detail_assign) == cfg.encoder_layers, \
+        "Length of lms_detail_assign should be 0 or the same as the number of encoder/decoder layer"
 
         for i in range(cfg.encoder_layers):
             is_moe_layer = moe_freq != 0 and (i + 1) % moe_freq == 0
             is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
-            is_adapter_layer = adapter_freq !=0 and (i + 1) % adapter_freq == 0
-            if cfg.moa_detail_assign != "":
-                is_adapter_layer = bool(int(moa_detail_assign[i]))
-            self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer))
+            is_lms_layer = lms_freq !=0 and (i + 1) % lms_freq == 0
+            if cfg.lms_detail_assign != "":
+                is_lms_layer = bool(int(lms_detail_assign[i]))
+            self.layers.append(self.build_encoder_layer(cfg, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_lms_layer=is_lms_layer))
         self.num_layers = len(self.layers)
 
         if cfg.encoder.normalize_before:
@@ -116,9 +116,9 @@ class TransformerEncoderBase(FairseqEncoder):
         else:
             self.layer_norm = None
 
-    def build_encoder_layer(self, cfg, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
+    def build_encoder_layer(self, cfg, is_moe_layer=False, is_moa_layer=False, is_lms_layer=False):
         layer = TransformerEncoderLayer(
-            cfg, return_fc=self.return_fc, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer
+            cfg, return_fc=self.return_fc, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_lms_layer=is_lms_layer
         )
         checkpoint = cfg.checkpoint_activations
         if checkpoint:
@@ -157,7 +157,7 @@ class TransformerEncoderBase(FairseqEncoder):
         token_embeddings: Optional[torch.Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ):
         """
         Args:
@@ -189,7 +189,7 @@ class TransformerEncoderBase(FairseqEncoder):
             token_embeddings,
             src_lang_id,
             tgt_lang_id,
-            adapter_side,
+            forward_side,
         )
 
     # TorchScript doesn't support super() method so that the scriptable Subclass
@@ -204,7 +204,7 @@ class TransformerEncoderBase(FairseqEncoder):
         token_embeddings: Optional[torch.Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
-        adapter_side: Optional[str] = None,
+        forward_side: Optional[str] = "ls",
     ):
         """
         Args:
@@ -264,7 +264,7 @@ class TransformerEncoderBase(FairseqEncoder):
             results["encoder_states"].append(x)
 
         # encoder layers
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss", "budget_loss"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
         for key in loss_keys:
             results[key] = []
         for layer in self.layers:
@@ -277,7 +277,7 @@ class TransformerEncoderBase(FairseqEncoder):
                 tokens=passed_src_tokens,
                 src_lang_id=src_lang_id,
                 tgt_lang_id=tgt_lang_id,
-                adapter_side=adapter_side,
+                forward_side=forward_side,
             )
             if isinstance(lr, tuple) and len(lr) == 2:
                 x, fc_result = lr

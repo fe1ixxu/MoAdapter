@@ -16,7 +16,7 @@ from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.linear import Linear
 from fairseq.modules.quant_noise import quant_noise
-from fairseq.modules.moa import L0Linear
+from fairseq.modules.language_specific_matrix_synthesis import LMSLinear
 
 try:
     HAS_FUSED_MASK_SOFTMAX = True
@@ -50,9 +50,9 @@ class MultiheadAttention(nn.Module):
         use_fused_softmax=False,
         init_model_on_gpu=False,
         moa_type=None,
-        num_langs=None,
-        init_beta=2/3,
-        loga_num=0,
+        langlist=None,
+        lms_type="pair",
+        lms_rank=32,
 
     ):
         super().__init__()
@@ -91,8 +91,7 @@ class MultiheadAttention(nn.Module):
         )
 
         random_state = torch.get_rng_state()
-        # self.l0flag = moa_type in ["l0", "l0lang", "l0langsum", "l0langsumid"]
-        self.l0flag = False
+        self.lmsflag = True if lms_type else False
 
         self.k_proj = quant_noise(
             Linear(
@@ -136,39 +135,39 @@ class MultiheadAttention(nn.Module):
             qn_block_size,
         )
 
-        if self.l0flag:
-            self.k_proj = L0Linear(
+        if self.lmsflag:
+            self.k_proj = LMSLinear(
                 self.kdim,
                 embed_dim,
-                num_langs,
-                init_beta=init_beta,
+                langlist,
+                lms_rank,
                 linear=self.k_proj,
-                num_loga=loga_num,
+                lms_type=lms_type,
                 )
-            self.v_proj = L0Linear(
+            self.v_proj = LMSLinear(
                 self.vdim,
                 embed_dim,
-                num_langs,
-                init_beta=init_beta,
+                langlist,
+                lms_rank,
                 linear=self.v_proj,
-                num_loga=loga_num,
+                lms_type=lms_type,
                 )
-            self.q_proj = L0Linear(
+            self.q_proj = LMSLinear(
                 embed_dim,
                 embed_dim,
-                num_langs,
-                init_beta=init_beta,
+                langlist,
+                lms_rank,
                 linear=self.q_proj,
-                num_loga=loga_num,
+                lms_type=lms_type,
                 )
 
-            self.out_proj = L0Linear(
+            self.out_proj = LMSLinear(
                 embed_dim,
                 embed_dim,
-                num_langs,
-                init_beta=init_beta,
+                langlist,
+                lms_rank,
                 linear=self.out_proj,
-                num_loga=loga_num,
+                lms_type=lms_type,
                 )
         torch.set_rng_state(random_state)
         if add_bias_kv:
@@ -357,7 +356,7 @@ class MultiheadAttention(nn.Module):
         before_softmax: bool = False,
         need_head_weights: bool = False,
         lang_id=None,
-        adapter_side=None,
+        forward_side=None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -378,8 +377,6 @@ class MultiheadAttention(nn.Module):
         """
         if need_head_weights:
             need_weights = True
-        l0flag = True if lang_id != None and self.l0flag else False
-
         is_tpu = query.device.type == "xla"
 
         tgt_len, bsz, embed_dim = query.size()
@@ -413,43 +410,17 @@ class MultiheadAttention(nn.Module):
             and not self.skip_embed_dim_check
         ):
             assert key is not None and value is not None
-            if l0flag:
-                def get_mask(w, m):
-                    if w.shape[-1] != m.shape[-1]:
-                        orig_shape = w.shape
-                        w_clone = w.data.clone()
-                        # w.data = w.data.view(-1, m.shape[-1])
-                        w.data = w.data.view(-1)
-                        w.data = w.data[m]
-                        # w.data = m * w.data
-                        w.data = w.data.view(orig_shape)
-                    else:
-                        # w = w * m
-                        w = 0.5 * (w.detach() + m + w + m.detach())
-                    return w
-                qmask, qmask_loss, q_budget_loss = self.q_proj.forward_mask(query, lang_id)
-                vmask, vmask_loss, v_budget_loss = self.v_proj.forward_mask(value, lang_id)
-                kmask, kmask_loss, k_budget_loss = self.k_proj.forward_mask(key, lang_id)
-                outmask, outmask_loss, out_budget_loss = self.out_proj.forward_mask(query, lang_id)
-
-                # qweight = qmask * self.q_proj.weight
-                # vweight = vmask * self.v_proj.weight
-                # kweight = kmask * self.k_proj.weight
-                # outweight = outmask * self.out_proj.weight
-
-                qweight = get_mask(self.q_proj.weight, qmask)
-                vweight = get_mask(self.v_proj.weight, vmask)
-                kweight = get_mask(self.k_proj.weight, kmask)
-                outweight = get_mask(self.out_proj.weight, outmask)
-
-                mask_loss = 0.25 * (qmask_loss + vmask_loss + kmask_loss + outmask_loss)
-                budget_loss = 0.25 * (q_budget_loss + v_budget_loss + k_budget_loss + out_budget_loss)
+            if self.lmsflag:
+                q_w = self.q_proj.get_lms_function()(lang_id)
+                v_w = self.v_proj.get_lms_function()(lang_id)
+                k_w = self.k_proj.get_lms_function()(lang_id)
+                out_w = self.out_proj.get_lms_function()(lang_id)
             else:
-                qweight = self.q_proj.weight
-                vweight = self.v_proj.weight
-                kweight = self.k_proj.weight
-                outweight = self.out_proj.weight
-                budget_loss = mask_loss = torch.tensor(0).to(query.device)
+                q_w = v_w = k_w = out_w = 0
+            qweight = self.q_proj.weight + q_w
+            vweight = self.v_proj.weight + v_w
+            kweight = self.k_proj.weight + k_w
+            outweight = self.out_proj.weight + out_w
 
             qkv_out = F.multi_head_attention_forward(
                 query,
@@ -476,7 +447,7 @@ class MultiheadAttention(nn.Module):
             )
 
             
-            return qkv_out[0], qkv_out[1], mask_loss, budget_loss
+            return qkv_out[0], qkv_out[1]
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -488,28 +459,26 @@ class MultiheadAttention(nn.Module):
                     key = value = None
         else:
             saved_state = None
-        if l0flag:
+        if self.lmsflag:
             if self.self_attention:
-                q, qmask_loss, q_budget_loss = self.q_proj(query, lang_id)
-                k, kmask_loss, k_budget_loss = self.k_proj(query, lang_id)
-                v, vmask_loss, v_budget_loss = self.v_proj(query, lang_id)
+                q = self.q_proj(query, lang_id)
+                k = self.k_proj(query, lang_id)
+                v = self.v_proj(query, lang_id)
             elif self.encoder_decoder_attention:
                 # encoder-decoder attention
-                q, qmask_loss, q_budget_loss = self.q_proj(query, lang_id)
+                q = self.q_proj(query, lang_id)
                 if key is None:
                     assert value is None
                     k = v = None
-                    kmask_loss = vmask_loss = 0
-                    k_budget_loss = v_budget_loss = 0
                 else:
-                    k, kmask_loss, k_budget_loss = self.k_proj(key, lang_id)
-                    v, vmask_loss, v_budget_loss = self.v_proj(key, lang_id)
+                    k = self.k_proj(key, lang_id)
+                    v = self.v_proj(key, lang_id)
 
             else:
                 assert key is not None and value is not None
-                q, qmask_loss, q_budget_loss = self.q_proj(query, lang_id)
-                k, kmask_loss, k_budget_loss = self.k_proj(key, lang_id)
-                v, vmask_loss, v_budget_loss = self.v_proj(value, lang_id)
+                q = self.q_proj(query, lang_id)
+                k = self.k_proj(key, lang_id)
+                v = self.v_proj(value, lang_id)
         else:
             if self.self_attention:
                 q = self.q_proj(query)
@@ -696,8 +665,8 @@ class MultiheadAttention(nn.Module):
             attn = attn.contiguous().view(tgt_len, bsz, self.embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.embed_dim)
-        if l0flag:
-            attn, outmask_loss, out_budget_loss = self.out_proj(attn, lang_id)
+        if self.lmsflag:
+            attn = self.out_proj(attn, lang_id)
         else:
             attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
@@ -708,13 +677,7 @@ class MultiheadAttention(nn.Module):
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
-        if l0flag:
-            mask_loss = 0.25 * (qmask_loss + kmask_loss + vmask_loss + outmask_loss)
-            budget_loss = 0.25 * (q_budget_loss + v_budget_loss + k_budget_loss + out_budget_loss)
-        else:
-            mask_loss = torch.tensor(0).to(query.device)
-            budget_loss = mask_loss
-        return attn, attn_weights, mask_loss, budget_loss
+        return attn, attn_weights
 
     @staticmethod
     def _append_prev_key_padding_mask(

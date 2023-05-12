@@ -232,13 +232,19 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "decoder FFN embed dim of alternate decoder layers"},
     )
-    l0_beta: float = field(
-        default=2/3,
-        metadata={"help": "beta for l0 method"},
+    lms_type: str = field(
+        default="pair",
+        metadata={"help": "LMS type"},
     )
-    loga_num: float = field(
-        default=0,
-        metadata={"help": "loga number for l0 method"},
+    lms_rank: int = field(
+        default=32,
+        metadata={"help": "LMS rank for low-rank matrix"},
+    )
+    lms_ffn: Optional[bool] = field(
+        default=False, metadata={"help": "Apply LMS at FFN module"}
+    )
+    lms_att: Optional[bool] = field(
+        default=False, metadata={"help": "Apply LMS at ATT module"}
     )
     moe_freq: int = field(
         default=0,
@@ -248,13 +254,13 @@ class TransformerConfig(FairseqDataclass):
         default=0,
         metadata={"help": "Frequency at which we insert Mixture of Adapter layers"},
     )
-    adapter_freq: int = field(
+    lms_freq: int = field(
         default=0,
         metadata={"help": "Frequency at which we insert Normal Adapter layers"},
     )
-    moa_detail_assign: str = field(
+    lms_detail_assign: str = field(
         default="",
-        metadata={"help": "Specific assignment for Mixture of Adapter layers, e.g., '1,0,0,0,0,1' means adapter layers are only employed at the first and last encoder or decoder layer"},
+        metadata={"help": "Specific assignment for LMS, e.g., '1,0,0,0,0,1' means adapter layers are only employed at the first and last encoder or decoder layer"},
     )
     encoder_moe_freq: int = field(
         default=0,
@@ -273,9 +279,6 @@ class TransformerConfig(FairseqDataclass):
     )
     moa_expert_count: int = field(
         default=0, metadata={"help": "Number of adapters in each MoA Layer"}
-    )
-    adapter_num: int = field(
-        default=0, metadata={"help": "Number of adapters in each LangMoA Layer"}
     )
     moe_gating_use_fp32: bool = field(
         default=False,
@@ -319,9 +322,6 @@ class TransformerConfig(FairseqDataclass):
     )
     moe_expert_ffn_dim: Optional[int] = field(
         default=None, metadata={"help": "MoE expert FFN dimension"}
-    )
-    adapter_hidden_dim: Optional[int] = field(
-        default=None, metadata={"help": "Adapter hidden dimension"}
     )
     moe_top1_expert: Optional[bool] = field(
         default=False, metadata={"help": "Use top1 gate instead of top2"}
@@ -392,9 +392,6 @@ class TransformerConfig(FairseqDataclass):
     )
     moa_type: Optional[str] = field(
         default="", metadata={"help": "Choose MoA type: clsa/para/seq/ad"}
-    )
-    lang_adapter_bottle_neck: Optional[int] = field(
-        default=128, metadata={"help": "language-specific adapter bottleneck when ad is enabled"}
     )
     cmr_log_lang_gates: Optional[bool] = field(
         default=False,
