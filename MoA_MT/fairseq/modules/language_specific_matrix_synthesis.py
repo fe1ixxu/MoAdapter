@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 from fairseq.modules import LayerNorm
 from fairseq.utils import get_activation_fn
-from fairseq.modules.linear import Linear as FairLinear
 
 def Linear(in_features, out_features, bias=True):
     m = torch.nn.Linear(in_features, out_features, bias)
