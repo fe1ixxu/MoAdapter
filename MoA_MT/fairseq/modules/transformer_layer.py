@@ -437,7 +437,7 @@ class TransformerEncoderLayerBase(nn.Module):
             lang_id = self.lang_dict.symbols[src_lang_id]
 
         if forward_side != "ls" or not self.is_lms_layer:
-            lang_id = "shared"
+            lang_id = "shared-shared" if "pair" in self.cfg.lms_type else "shared"
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
@@ -942,7 +942,7 @@ class TransformerDecoderLayerBase(nn.Module):
         else:
             lang_id = self.lang_dict.symbols[src_lang_id]
         if forward_side != "ls" or not self.is_lms_layer:
-            lang_id = "shared"
+            lang_id = "shared-shared" if "pair" in self.cfg.lms_type else "shared"
 
         x, attn = self.self_attn(
             query=x,

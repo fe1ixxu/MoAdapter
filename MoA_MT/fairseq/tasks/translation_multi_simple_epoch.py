@@ -344,10 +344,10 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
     ): 
         losses, logits, logging_outputs = [], [], []
         
-        for adapter_side in ["ls", "shared"]:
+        for forward_side in ["ls", "shared"]:
             with torch.autograd.profiler.record_function("forward"):
                 with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                    loss, logit, sample_size, logging_output = self._get_loss(sample, model, criterion, adapter_side)
+                    loss, logit, sample_size, logging_output = self._get_loss(sample, model, criterion, forward_side)
                     losses.append(loss)
                     logits.append(logit)
                     logging_outputs.append(logging_output)
@@ -380,12 +380,12 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
 
         return loss, sample_size, logging_output
 
-    def _get_loss(self, sample, model, criterion, adapter_side, reduce=True):
+    def _get_loss(self, sample, model, criterion, forward_side, reduce=True):
         assert hasattr(
             criterion, "compute_loss"
         ), "FD task requires the criterion to implement the compute_loss() method"
         
-        net_output = model(**sample["net_input"], adapter_side=adapter_side)
+        net_output = model(**sample["net_input"], forward_side=forward_side)
         sample_size = (
             sample["target"].size(0) if criterion.sentence_avg else sample["ntokens"]
         )
