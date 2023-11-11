@@ -16,7 +16,7 @@ from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.linear import Linear
 from fairseq.modules.quant_noise import quant_noise
-from fairseq.modules.moa import L0Linear
+from fairseq.modules.moa import L0Linear, L0Linear2
 
 try:
     HAS_FUSED_MASK_SOFTMAX = True
@@ -91,7 +91,7 @@ class MultiheadAttention(nn.Module):
         )
 
         random_state = torch.get_rng_state()
-        # self.l0flag = moa_type in ["l0", "l0lang", "l0langsum", "l0langsumid"]
+        # self.l0flag = moa_type in ["l0lang2"]
         self.l0flag = False
 
         self.k_proj = quant_noise(
@@ -137,7 +137,7 @@ class MultiheadAttention(nn.Module):
         )
 
         if self.l0flag:
-            self.k_proj = L0Linear(
+            self.k_proj = L0Linear2(
                 self.kdim,
                 embed_dim,
                 num_langs,
@@ -145,7 +145,7 @@ class MultiheadAttention(nn.Module):
                 linear=self.k_proj,
                 num_loga=loga_num,
                 )
-            self.v_proj = L0Linear(
+            self.v_proj = L0Linear2(
                 self.vdim,
                 embed_dim,
                 num_langs,
@@ -153,7 +153,7 @@ class MultiheadAttention(nn.Module):
                 linear=self.v_proj,
                 num_loga=loga_num,
                 )
-            self.q_proj = L0Linear(
+            self.q_proj = L0Linear2(
                 embed_dim,
                 embed_dim,
                 num_langs,
@@ -162,7 +162,7 @@ class MultiheadAttention(nn.Module):
                 num_loga=loga_num,
                 )
 
-            self.out_proj = L0Linear(
+            self.out_proj = L0Linear2(
                 embed_dim,
                 embed_dim,
                 num_langs,
@@ -378,7 +378,7 @@ class MultiheadAttention(nn.Module):
         """
         if need_head_weights:
             need_weights = True
-        l0flag = True if lang_id != None and self.l0flag else False
+        # l0flag = True if lang_id != None and self.l0flag else False
 
         is_tpu = query.device.type == "xla"
 
@@ -413,29 +413,13 @@ class MultiheadAttention(nn.Module):
             and not self.skip_embed_dim_check
         ):
             assert key is not None and value is not None
-            if l0flag:
+            if self.l0flag:
                 def get_mask(w, m):
-                    if w.shape[-1] != m.shape[-1]:
-                        orig_shape = w.shape
-                        w_clone = w.data.clone()
-                        # w.data = w.data.view(-1, m.shape[-1])
-                        w.data = w.data.view(-1)
-                        w.data = w.data[m]
-                        # w.data = m * w.data
-                        w.data = w.data.view(orig_shape)
-                    else:
-                        # w = w * m
-                        w = 0.5 * (w.detach() + m + w + m.detach())
-                    return w
+                    return w + m
                 qmask, qmask_loss, q_budget_loss = self.q_proj.forward_mask(query, lang_id)
                 vmask, vmask_loss, v_budget_loss = self.v_proj.forward_mask(value, lang_id)
                 kmask, kmask_loss, k_budget_loss = self.k_proj.forward_mask(key, lang_id)
                 outmask, outmask_loss, out_budget_loss = self.out_proj.forward_mask(query, lang_id)
-
-                # qweight = qmask * self.q_proj.weight
-                # vweight = vmask * self.v_proj.weight
-                # kweight = kmask * self.k_proj.weight
-                # outweight = outmask * self.out_proj.weight
 
                 qweight = get_mask(self.q_proj.weight, qmask)
                 vweight = get_mask(self.v_proj.weight, vmask)
@@ -488,7 +472,7 @@ class MultiheadAttention(nn.Module):
                     key = value = None
         else:
             saved_state = None
-        if l0flag:
+        if self.l0flag:
             if self.self_attention:
                 q, qmask_loss, q_budget_loss = self.q_proj(query, lang_id)
                 k, kmask_loss, k_budget_loss = self.k_proj(query, lang_id)
@@ -696,7 +680,7 @@ class MultiheadAttention(nn.Module):
             attn = attn.contiguous().view(tgt_len, bsz, self.embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.embed_dim)
-        if l0flag:
+        if self.l0flag:
             attn, outmask_loss, out_budget_loss = self.out_proj(attn, lang_id)
         else:
             attn = self.out_proj(attn)
@@ -708,7 +692,7 @@ class MultiheadAttention(nn.Module):
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
-        if l0flag:
+        if self.l0flag:
             mask_loss = 0.25 * (qmask_loss + kmask_loss + vmask_loss + outmask_loss)
             budget_loss = 0.25 * (q_budget_loss + v_budget_loss + k_budget_loss + out_budget_loss)
         else:

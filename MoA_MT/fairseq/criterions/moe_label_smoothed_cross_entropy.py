@@ -227,11 +227,14 @@ class MoELabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         )
         gate_loss = sample_size * gate_loss
         cmr_gate_loss = sample_size * cmr_gate_loss
-        loss = (
-            ls_loss
-            + self.gate_loss_weight * gate_loss
-            + self.cmr_gate_loss_weight * cmr_gate_loss
-        )
+        if model.training:
+            loss = (
+                ls_loss
+                + self.gate_loss_weight * gate_loss
+                + self.cmr_gate_loss_weight * cmr_gate_loss
+            )
+        else:
+            loss = ls_loss
         return loss, nll_loss, gate_loss, cmr_gate_loss, self.get_moe_metadata(model)
 
     def get_moe_metadata(self, model):
