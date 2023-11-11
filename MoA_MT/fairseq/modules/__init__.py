@@ -50,7 +50,7 @@ from .rotary_positional_embedding import RotaryPositionalEmbedding
 from .positional_encoding import (
     RelPositionalEncoding,
 )
-
+from .language_specific_matrix_synthesis import LMSLinear
 __all__ = [
     "AdaptiveInput",
     "AdaptiveSoftmax",

@@ -47,21 +47,6 @@ MINED_DATA_TAG = torch.tensor([45, 50, 248120, 49, 248123]).int().cpu()
 
 logger = logging.getLogger(__name__)
 
-def X_loss(logits, pad_mask):
-    pad_mask = pad_mask.view(-1)
-    non_pad_mask = ~pad_mask
-    dict_size = logits[0].size(-1)
-
-    m = sum(logits) / len(logits)
-    m = m.float().view(-1, dict_size)[non_pad_mask]
-
-    kl_all = 0
-    for l in logits:
-        l = l.float().view(-1, dict_size)[non_pad_mask]
-        d = (l-m) * (torch.log(l) - torch.log(m))
-        kl_all += d.sum()
-    return kl_all / len(logits)
-
 def symmetric_KL_loss(p, q, pad_mask):
     """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
     # q = q.detach()
@@ -72,19 +57,6 @@ def symmetric_KL_loss(p, q, pad_mask):
     q = q.view(-1, dict_size)[non_pad_mask]
     loss = (p - q) * (torch.log(p) - torch.log(q))
     return 0.5 * loss.sum()
-
-def KL_loss(p, q, pad_mask):
-    """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
-    p, q, pad_mask = p.float(), q.float(), pad_mask.view(-1)
-    q = q.detach()
-    dict_size = q.size(-1)
-    non_pad_mask = ~pad_mask
-    p = p.view(-1, dict_size)[non_pad_mask]
-    q = q.view(-1, dict_size)[non_pad_mask]
-    loss = q * torch.log(q) - q * torch.log(p)
-    loss = loss.sum()
-    assert loss > 0
-    return loss
 
 @register_task("translation_multi_simple_epoch")
 class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
@@ -142,7 +114,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
                             "use 'space' to disable detokenization; see fairseq.data.encoders for other options")
         parser.add_argument('--eval-bleu-print-samples', action='store_true',
                             help="print sample generations during validation")
-        parser.add_argument('--ad-weight', type=float, default=1.0,
+        parser.add_argument('--fd-weight', type=float, default=1.0,
                             help="weight for the ad loss")
 
         SamplingMethod.add_arguments(parser)
@@ -186,7 +158,7 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         self.eval_tokenized_bleu = args.eval_tokenized_bleu
         self.eval_bleu_detok = args.eval_bleu_detok
         self.eval_bleu_print_samples = args.eval_bleu_print_samples
-        self.ad_weight = args.ad_weight
+        self.fd_weight = args.fd_weight
 
     def get_lang_idx(self):
         lang_idx = torch.zeros(len(self.langs) + 1, dtype=torch.int32)
@@ -361,47 +333,34 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
         model.train()
         model.set_num_updates(update_num)
 
-        if model.cfg.moa_type in ["ad", "lua", "luaplus", "lua_pair", "l0langsum", "l0langsumid", "l0langsumid2"]:
-            loss, sample_size, logging_output = self.ad_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
+        if model.cfg.lms_type in ["pair_fd", "lang_fd"]:
+            loss, sample_size, logging_output = self.fd_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         else:
             loss, sample_size, logging_output = self.normal_train_step(sample, model, criterion, optimizer, update_num, ignore_grad=ignore_grad)
         return loss, sample_size, logging_output
 
-    def ad_train_step(
+    def fd_train_step(
         self, sample, model, criterion, optimizer, update_num, ignore_grad=False
     ): 
         losses, logits, logging_outputs = [], [], []
         
-        for adapter_side in ["moa", "lang_specific"]:
+        for forward_side in ["ls", "shared"]:
             with torch.autograd.profiler.record_function("forward"):
                 with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                    loss, logit, sample_size, logging_output = self._get_loss(sample, model, criterion, adapter_side)
+                    loss, logit, sample_size, logging_output = self._get_loss(sample, model, criterion, forward_side)
                     losses.append(loss)
                     logits.append(logit)
                     logging_outputs.append(logging_output)
 
-        if model.cfg.moa_type == "l0langsum":
-            loss = sum(losses)/len(losses)
-            ad_loss = torch.zeros_like(loss)
-        elif model.cfg.moa_type == "lua":
-            pad_mask = sample["target"].eq(criterion.padding_idx)
-            ad_loss = KL_loss(logits[0], logits[1], pad_mask)
-            loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
-        else:
-            pad_mask = sample["target"].eq(criterion.padding_idx)
-            # ad_loss = X_loss(logits, pad_mask)
-            ad_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
-            # ad_loss = KL_loss(logits[0], logits[1], pad_mask)
-            loss = sum(losses)/len(losses) + ad_loss * self.ad_weight
+        pad_mask = sample["target"].eq(criterion.padding_idx)
+        fd_loss = symmetric_KL_loss(logits[0], logits[1], pad_mask)
+        loss = sum(losses)/len(losses) + fd_loss * self.fd_weight
 
         logging_output = {}
         for k in logging_outputs[0].keys():
-            if k not in ["moa_loss", "cmr_loss"]:
-                logging_output[k] = (logging_outputs[0][k] + logging_outputs[1][k]) / 2
-            else:
-                logging_output[k] = logging_outputs[0][k]
+            logging_output[k] = (logging_outputs[0][k] + logging_outputs[1][k]) / 2
  
-        logging_output["ad_loss"] = ad_loss
+        logging_output["fd_loss"] = fd_loss
 
         if ignore_grad:
             loss *= 0
@@ -421,57 +380,25 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
 
         return loss, sample_size, logging_output
 
-    def _get_loss(self, sample, model, criterion, adapter_side, reduce=True):
+    def _get_loss(self, sample, model, criterion, forward_side, reduce=True):
         assert hasattr(
             criterion, "compute_loss"
-        ), "MoA with ad task requires the criterion to implement the compute_loss() method"
+        ), "FD task requires the criterion to implement the compute_loss() method"
         
-        net_output = model(**sample["net_input"], adapter_side=adapter_side)
+        net_output = model(**sample["net_input"], forward_side=forward_side)
         sample_size = (
             sample["target"].size(0) if criterion.sentence_avg else sample["ntokens"]
         )
-        if model.cfg.moa_type == "ad": 
-            loss, nll_loss, moa_loss, cmr_loss, moa_metadata = criterion.compute_loss(
-                model, net_output, sample, sample_size, reduce=reduce
-            )
-            logits = net_output[0].float()
-            logits = F.softmax(logits, dim=-1)
-
-            logging_output = {
-                "loss": loss.data,
-                "nll_loss": nll_loss.data,
-                "moa_loss": moa_loss.data,
-                "cmr_loss": cmr_loss.data,
-                "ntokens": sample["ntokens"],
-                "nsentences": sample["target"].size(0),
-                "sample_size": sample_size,
-            }
-            logging_output.update(moa_metadata)
-        elif model.cfg.moa_type == "l0langsum":
-            loss, nll_loss, lid_loss, budget_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
-            logits = None
-            logging_output = {
-                "loss": loss.data,
-                "nll_loss": nll_loss.data,
-                "lid_loss": lid_loss.data * sample_size,
-                "budget_loss": budget_loss * sample_size,
-                "ntokens": sample["ntokens"],
-                "nsentences": sample["target"].size(0),
-                "sample_size": sample_size,
-            }
-        else:
-            loss, nll_loss, lid_loss, budget_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
-            logits = net_output[0].float()
-            logits = F.softmax(logits, dim=-1)
-            logging_output = {
-                "loss": loss.data,
-                "nll_loss": nll_loss.data,
-                "lid_loss": lid_loss.data * sample_size,
-                "budget_loss": budget_loss * sample_size,
-                "ntokens": sample["ntokens"],
-                "nsentences": sample["target"].size(0),
-                "sample_size": sample_size,
-            }
+        loss, nll_loss = criterion.compute_loss(model, net_output, sample, reduce=reduce)
+        logits = net_output[0].float()
+        logits = F.softmax(logits, dim=-1)
+        logging_output = {
+            "loss": loss.data,
+            "nll_loss": nll_loss.data,
+            "ntokens": sample["ntokens"],
+            "nsentences": sample["target"].size(0),
+            "sample_size": sample_size,
+        }
 
         return loss, logits, sample_size, logging_output
 
@@ -501,42 +428,6 @@ class TranslationMultiSimpleEpochTask(LegacyFairseqTask):
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
-
-
-        # name_type = "lua"
-        # lg = "pl" # ar,de,es,fa,he,it,nl,pl
-        # if self.gradients["fc1_0"][1] < 50:
-        #     print(self.gradients["fc1_0"][1], self.gradients["fc2_0"][1])
-        #     for name, params in model.named_parameters():
-        #         for i in range(6):
-        #             if f"encoder.layers.{i}.fc1.weight" in name:
-        #                 grad = params.grad.clone().detach().float()
-        #                 params = params.clone().detach().float()
-        #                 grad = torch.abs(grad*params).to("cpu")
-        #                 self.gradients[f"fc1_{i}"][0] = (self.gradients[f"fc1_{i}"][0] * self.gradients[f"fc1_{i}"][1] + grad) / (self.gradients[f"fc1_{i}"][1] + 1)
-        #                 self.gradients[f"fc1_{i}"][1] += 1
-        #                 # score = torch.abs(grad*params).to("cpu")
-        #                 # torch.save(grad, f"analysis_weights/gradient_decoder_{name_type}_{lg}_{i}_fc1")
-        #                 # torch.save(params, f"analysis_weights/params_encoder_{name_type}_{lg}_{i}_fc1")
-
-        #             if f"encoder.layers.{i}.fc2.weight" in name:
-        #                 grad = params.grad.clone().detach().float()
-        #                 params = params.clone().detach().float()
-        #                 grad = torch.abs(grad*params).to("cpu")
-        #                 self.gradients[f"fc2_{i}"][0] = (self.gradients[f"fc2_{i}"][0] * self.gradients[f"fc2_{i}"][1] + grad) / (self.gradients[f"fc2_{i}"][1] + 1)
-        #                 self.gradients[f"fc2_{i}"][1] += 1
-        #                 # 
-        #                 # torch.save(grad, f"analysis_weights/gradient_decoder_{name_type}_{lg}_{i}_fc2")
-        #                 # torch.save(params, f"analysis_weights/params_encoder_{name_type}_{lg}_{i}_fc2")
-        # else:
-        #     for i in range(6):
-        #         torch.save(self.gradients[f"fc1_{i}"][0], f"analysis_weights/encoder_{name_type}_{lg}_{i}_fc1")
-        #         torch.save(self.gradients[f"fc2_{i}"][0], f"analysis_weights/encoder_{name_type}_{lg}_{i}_fc2")
-        #     print(lg)
-        #     exit(0)
-
-
-
         if self.eval_bleu:
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output["_bleu_sys_len"] = bleu.sys_len

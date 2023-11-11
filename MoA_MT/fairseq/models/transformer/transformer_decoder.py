@@ -29,7 +29,6 @@ from fairseq.modules import (
 from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.linear import Linear
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
-from fairseq.modules.moa import L0Linear
 
 
 # rewrite name for backward compatibility in `make_generation_fast_`
@@ -140,19 +139,19 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         moe_freq = max(cfg.decoder_moe_freq, cfg.moe_freq)
         moa_freq = cfg.moa_freq
         moa_freq = cfg.moa_freq
-        adapter_freq = cfg.adapter_freq
-        moa_detail_assign = cfg.moa_detail_assign.split(",") # moa_detail_assign will override moa_freq
-        assert cfg.moa_detail_assign == "" or len(moa_detail_assign) == cfg.decoder_layers, \
-        "Length of moa_detail_assign should be 0 or the same as the number of encoder/decoder layer"
+        lms_freq = cfg.lms_freq
+        lms_detail_assign = cfg.lms_detail_assign.split(",") # lms_detail_assign will override moa_freq
+        assert cfg.lms_detail_assign == "" or len(lms_detail_assign) == cfg.decoder_layers, \
+        "Length of lms_detail_assign should be 0 or the same as the number of encoder/decoder layer"
         for i in range(cfg.decoder_layers):
             is_moe_layer = moe_freq != 0 and (i + 1) % moe_freq == 0
             is_moa_layer = moa_freq != 0 and (i + 1) % moa_freq == 0
-            is_adapter_layer = adapter_freq != 0 and (i + 1) % adapter_freq == 0
-            if cfg.moa_detail_assign != "":
-                is_adapter_layer = bool(int(moa_detail_assign[i]))
+            is_lms_layer = lms_freq != 0 and (i + 1) % lms_freq == 0
+            if cfg.lms_detail_assign != "":
+                is_lms_layer = bool(int(lms_detail_assign[i]))
             self.layers.append(
                 self.build_decoder_layer(
-                    cfg, no_encoder_attn=no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer,
+                    cfg, no_encoder_attn=no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_lms_layer=is_lms_layer,
                 )
             )
 
@@ -164,44 +163,22 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 self.layer_norm = self.layer_norm.cuda().half()
         else:
             self.layer_norm = None
-        # self.l0flag = cfg.moa_type in ["l0", "l0lang"]
-        self.l0flag = False
-        if self.l0flag:
-            self.project_out_dim = (
-                L0Linear(
-                    embed_dim,
-                    self.output_embed_dim,
-                    cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
-                    init_beta=cfg.l0_beta,
-                )
-                if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
-                
-                else None
+
+        self.project_out_dim = (
+            Linear(
+                embed_dim,
+                self.output_embed_dim,
+                bias=False,
+                init_model_on_gpu=init_model_on_gpu,
             )
-        else:
-            self.project_out_dim = (
-                Linear(
-                    embed_dim,
-                    self.output_embed_dim,
-                    bias=False,
-                    init_model_on_gpu=init_model_on_gpu,
-                )
-                if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
-                else None
-            )
+            if embed_dim != self.output_embed_dim and not cfg.tie_adaptive_weights
+            else None
+        )
 
         self.adaptive_softmax = None
         self.output_projection = output_projection
         if self.output_projection is None:
             self.build_output_projection(cfg, dictionary, embed_tokens)
-        if self.l0flag:
-            self.output_projection = L0Linear(
-                    self.output_embed_dim,
-                    len(dictionary),
-                    cfg.lang_pairs.split(",") if cfg.moa_type == "l0" else cfg.langs,
-                    linear=self.output_projection,
-                    init_beta=cfg.l0_beta,
-                )
         if self.use_alibi:
             self.alibi = self._build_alibi_tensor(
                 self.max_positions(), cfg.decoder.attention_heads
@@ -276,8 +253,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         alibi = alibi.view(n_attention_heads, 1, max_seq_len)
         return alibi
 
-    def build_decoder_layer(self, cfg, no_encoder_attn=False, is_moe_layer=False, is_moa_layer=False, is_adapter_layer=False):
-        layer = TransformerDecoderLayer(cfg, no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_adapter_layer=is_adapter_layer)
+    def build_decoder_layer(self, cfg, no_encoder_attn=False, is_moe_layer=False, is_moa_layer=False, is_lms_layer=False):
+        layer = TransformerDecoderLayer(cfg, no_encoder_attn, is_moe_layer=is_moe_layer, is_moa_layer=is_moa_layer, is_lms_layer=is_lms_layer)
         checkpoint = cfg.checkpoint_activations
         if checkpoint:
             offload_to_cpu = cfg.offload_activations
@@ -346,7 +323,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ):
         """
         Includes several features from "Jointly Learning to Align and
@@ -388,22 +365,10 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             self_attn_padding_mask=self_attn_padding_mask,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
-            adapter_side=adapter_side,
+            forward_side=forward_side,
         )
         if not features_only:
-            if self.l0flag:
-                if self.cfg.moa_type in ["lang_moa", "luaplus"]:
-                    lang_id = tgt_lang_id[0] - 1
-                elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
-                    src_key = self.layers[0].lang_dict.symbols[src_lang_id[0]]
-                    tgt_key = self.layers[0].lang_dict.symbols[tgt_lang_id[0]]
-                    lang_id = src_key + "-" + tgt_key
-                else:
-                    lang_id = self.lang_dict.symbols[tgt_lang_id[0]]
-                x, mask_loss = self.output_layer(x, lang_id)
-                extra["lid_loss"].append(mask_loss)
-            else:
-                x = self.output_layer(x)
+            x = self.output_layer(x)
         return x, extra
 
     def extract_features(
@@ -418,7 +383,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ):
         return self.extract_features_scriptable(
             prev_output_tokens,
@@ -431,7 +396,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             self_attn_padding_mask=self_attn_padding_mask,
             src_lang_id=src_lang_id,
             tgt_lang_id=tgt_lang_id,
-            adapter_side=adapter_side,
+            forward_side=forward_side,
         )
 
     """
@@ -452,7 +417,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self_attn_padding_mask: Optional[Tensor] = None,
         src_lang_id: Optional[torch.Tensor] = None,
         tgt_lang_id: Optional[torch.Tensor] = None,
-        adapter_side: Optional[str] = "moa",
+        forward_side: Optional[str] = "ls",
     ):
         """
         Similar to *forward* but only return features.
@@ -503,7 +468,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         results: Dict[str, Optional[Tensor]] = {"inner_states": [x]}
-        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom", "lid_loss", "var_loss", "budget_loss"]
+        loss_keys = ["moa_gate_loss", "moe_gate_loss", "cmr_gate_loss_num", "cmr_gate_loss_denom"]
         for key in loss_keys:
             results[key] = []
             if encoder_out is not None and key in encoder_out:
@@ -531,7 +496,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 tokens=prev_output_tokens,
                 src_lang_id=src_lang_id,
                 tgt_lang_id=tgt_lang_id,
-                adapter_side=adapter_side,
+                forward_side=forward_side,
             )
             for key in loss_keys:
                 results[key].append((l_aux_i or {}).get(key, None))
@@ -554,19 +519,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         x = x.transpose(0, 1)
 
         if self.project_out_dim is not None:
-            if self.l0flag:
-                if self.cfg.moa_type in ["lang_moa", "luaplus"]:
-                    lang_id = tgt_lang_id - 1
-                elif self.cfg.moa_type in ["seq_naive_pair", "lua_pair", "l0", "l0drop"]:
-                    src_key = self.layers[0].lang_dict.symbols[src_lang_id]
-                    tgt_key = self.layers[0].lang_dict.symbols[tgt_lang_id]
-                    lang_id = src_key + "-" + tgt_key
-                else:
-                    lang_id = self.lang_dict.symbols[tgt_lang_id]
-                x, mask_loss = self.project_out_dim(x, lang_id)
-                results["lid_loss"].append(mask_loss)
-            else:
-                x = self.project_out_dim(x)
+            x = self.project_out_dim(x)
 
         return x, results
 
@@ -574,10 +527,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         """Project features to the vocabulary size."""
         if self.adaptive_softmax is None:
             # project back to size of vocabulary
-            if self.l0flag:
-                return self.output_projection(features, lang_id)
-            else:
-                return self.output_projection(features)
+            return self.output_projection(features)
         else:
             return features
 
